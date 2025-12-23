@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -6,8 +7,25 @@ use std::path::PathBuf;
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth2: Option<OAuth2Config>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuth2Config {
+    pub client_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl OAuth2Config {
+    pub fn is_expired(&self) -> bool {
+        Utc::now() >= self.expires_at
+    }
 }
 
 impl Config {
@@ -40,5 +58,14 @@ impl Config {
 
     pub fn host(&self) -> &str {
         self.host.as_deref().unwrap_or("https://gitlab.com")
+    }
+
+    pub fn get_access_token(&self) -> Option<&str> {
+        if let Some(oauth2) = &self.oauth2 {
+            if !oauth2.is_expired() {
+                return Some(&oauth2.access_token);
+            }
+        }
+        self.token.as_deref()
     }
 }

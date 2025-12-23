@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod config;
 
 use anyhow::{bail, Result};
@@ -29,6 +30,11 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Authentication commands
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
     /// Merge request commands
     Mr {
         #[command(subcommand)]
@@ -39,6 +45,21 @@ enum Commands {
         #[command(subcommand)]
         command: CiCommands,
     },
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Authenticate with GitLab using OAuth2
+    Login {
+        /// OAuth2 application client ID (defaults to glab's client ID for gitlab.com)
+        #[arg(long)]
+        client_id: Option<String>,
+        /// GitLab host URL (overrides configured host)
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Show authentication status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -107,11 +128,18 @@ enum CiCommands {
     },
 }
 
-fn get_client(config: &Config, project_override: Option<&str>) -> Result<Client> {
+async fn get_client(config: &mut Config, project_override: Option<&str>) -> Result<Client> {
+    // Check if OAuth2 token needs refresh
+    if let Some(oauth2) = &config.oauth2 {
+        if oauth2.is_expired() {
+            eprintln!("Token expired, refreshing...");
+            auth::refresh_token(config).await?;
+        }
+    }
+
     let token = config
-        .token
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No token configured. Run: gitlab config --token <token>"))?;
+        .get_access_token()
+        .ok_or_else(|| anyhow::anyhow!("No token configured. Run: gitlab auth login --client-id <id>"))?;
 
     let project = project_override
         .map(|s| s.to_string())
@@ -156,6 +184,46 @@ async fn main() -> Result<()> {
             println!("Configuration saved.");
         }
 
+        Commands::Auth { command } => match command {
+            AuthCommands::Login { client_id, host } => {
+                let auth_host = host.as_deref().unwrap_or_else(|| config.host());
+                let cid = client_id.as_deref().unwrap_or(auth::default_client_id());
+                let flow = auth::AuthFlow::new(auth_host, cid);
+
+                let auth_url = flow.authorization_url();
+                println!("Opening browser for authorization...");
+                println!("If browser doesn't open, visit: {}", auth_url);
+
+                if let Err(e) = open::that(&auth_url) {
+                    eprintln!("Failed to open browser: {}", e);
+                }
+
+                let code = flow.wait_for_callback()?;
+                println!("Authorization code received, exchanging for token...");
+
+                let oauth2_config = flow.exchange_code(&code).await?;
+                config.oauth2 = Some(oauth2_config);
+                config.token = None; // Clear old static token
+                if host.is_some() {
+                    config.host = host;
+                }
+                config.save()?;
+                println!("Authentication successful!");
+            }
+            AuthCommands::Status => {
+                if let Some(oauth2) = &config.oauth2 {
+                    println!("OAuth2 authenticated");
+                    println!("  client_id: {}...", &oauth2.client_id[..8.min(oauth2.client_id.len())]);
+                    println!("  expires_at: {}", oauth2.expires_at);
+                    println!("  expired: {}", oauth2.is_expired());
+                } else if config.token.is_some() {
+                    println!("Using static token (legacy)");
+                } else {
+                    println!("Not authenticated");
+                }
+            }
+        },
+
         Commands::Mr { command } => match command {
             MrCommands::List {
                 state,
@@ -168,7 +236,7 @@ async fn main() -> Result<()> {
                 per_page,
                 project,
             } => {
-                let client = get_client(&config, project.as_deref())?;
+                let client = get_client(&mut config, project.as_deref()).await?;
                 let params = MrListParams {
                     per_page,
                     state,
@@ -183,7 +251,7 @@ async fn main() -> Result<()> {
                 print_mrs(&result);
             }
             MrCommands::Show { iid, project } => {
-                let client = get_client(&config, project.as_deref())?;
+                let client = get_client(&mut config, project.as_deref()).await?;
                 let result = client.get_merge_request(iid).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             }
@@ -191,7 +259,7 @@ async fn main() -> Result<()> {
 
         Commands::Ci { command } => match command {
             CiCommands::Status { id, project } => {
-                let client = get_client(&config, project.as_deref())?;
+                let client = get_client(&mut config, project.as_deref()).await?;
                 let pipeline = if let Some(pid) = id {
                     client.get_pipeline(pid).await?
                 } else {
@@ -226,7 +294,7 @@ async fn main() -> Result<()> {
                 }
             }
             CiCommands::Logs { job, pipeline, project } => {
-                let client = get_client(&config, project.as_deref())?;
+                let client = get_client(&mut config, project.as_deref()).await?;
 
                 let pipeline_id = if let Some(pid) = pipeline {
                     pid
