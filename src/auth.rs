@@ -142,7 +142,9 @@ fn extract_code_from_request(request_line: &str) -> Result<String> {
     }
 
     let path = parts[1];
-    let query_start = path.find('?').ok_or_else(|| anyhow!("No query string in callback"))?;
+    let query_start = path
+        .find('?')
+        .ok_or_else(|| anyhow!("No query string in callback"))?;
     let query = &path[query_start + 1..];
 
     for pair in query.split('&') {
@@ -157,7 +159,8 @@ fn extract_code_from_request(request_line: &str) -> Result<String> {
                     .find_map(|p| {
                         let mut kv = p.splitn(2, '=');
                         if kv.next() == Some("error_description") {
-                            kv.next().map(|v| urlencoding::decode(v).unwrap_or_default().into_owned())
+                            kv.next()
+                                .map(|v| urlencoding::decode(v).unwrap_or_default().into_owned())
                         } else {
                             None
                         }
@@ -172,7 +175,8 @@ fn extract_code_from_request(request_line: &str) -> Result<String> {
 }
 
 fn parse_token_response(client_id: &str, body: &str) -> Result<OAuth2Config> {
-    let json: serde_json::Value = serde_json::from_str(body).context("Failed to parse token response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(body).context("Failed to parse token response")?;
 
     let access_token = json["access_token"]
         .as_str()

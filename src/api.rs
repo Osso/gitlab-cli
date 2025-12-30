@@ -14,8 +14,7 @@ impl Client {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token))
-                .context("Invalid auth token")?,
+            HeaderValue::from_str(&format!("Bearer {}", token)).context("Invalid auth token")?,
         );
 
         let http = reqwest::Client::builder()

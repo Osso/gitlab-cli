@@ -137,15 +137,17 @@ async fn get_client(config: &mut Config, project_override: Option<&str>) -> Resu
         }
     }
 
-    let token = config
-        .get_access_token()
-        .ok_or_else(|| anyhow::anyhow!("No token configured. Run: gitlab auth login --client-id <id>"))?;
+    let token = config.get_access_token().ok_or_else(|| {
+        anyhow::anyhow!("No token configured. Run: gitlab auth login --client-id <id>")
+    })?;
 
     let project = project_override
         .map(|s| s.to_string())
         .or_else(|| config.project.clone())
         .ok_or_else(|| {
-            anyhow::anyhow!("No project specified. Use --project or run: gitlab config --project <project>")
+            anyhow::anyhow!(
+                "No project specified. Use --project or run: gitlab config --project <project>"
+            )
         })?;
 
     Client::new(config.host(), token, &project)
@@ -157,13 +159,21 @@ async fn main() -> Result<()> {
     let mut config = Config::load()?;
 
     match cli.command {
-        Commands::Config { host, token, project } => {
+        Commands::Config {
+            host,
+            token,
+            project,
+        } => {
             if host.is_none() && token.is_none() && project.is_none() {
                 println!("Current configuration:");
                 println!("  host: {}", config.host());
                 println!(
                     "  token: {}",
-                    config.token.as_ref().map(|t| format!("{}...", &t[..8.min(t.len())])).unwrap_or_else(|| "(not set)".to_string())
+                    config
+                        .token
+                        .as_ref()
+                        .map(|t| format!("{}...", &t[..8.min(t.len())]))
+                        .unwrap_or_else(|| "(not set)".to_string())
                 );
                 println!(
                     "  project: {}",
@@ -213,7 +223,10 @@ async fn main() -> Result<()> {
             AuthCommands::Status => {
                 if let Some(oauth2) = &config.oauth2 {
                     println!("OAuth2 authenticated");
-                    println!("  client_id: {}...", &oauth2.client_id[..8.min(oauth2.client_id.len())]);
+                    println!(
+                        "  client_id: {}...",
+                        &oauth2.client_id[..8.min(oauth2.client_id.len())]
+                    );
                     println!("  expires_at: {}", oauth2.expires_at);
                     println!("  expired: {}", oauth2.is_expired());
                 } else if config.token.is_some() {
@@ -264,7 +277,9 @@ async fn main() -> Result<()> {
                     client.get_pipeline(pid).await?
                 } else {
                     let pipelines = client.list_pipelines(1).await?;
-                    let arr = pipelines.as_array().ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                    let arr = pipelines
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
                     if arr.is_empty() {
                         bail!("No pipelines found");
                     }
@@ -293,22 +308,32 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            CiCommands::Logs { job, pipeline, project } => {
+            CiCommands::Logs {
+                job,
+                pipeline,
+                project,
+            } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
 
                 let pipeline_id = if let Some(pid) = pipeline {
                     pid
                 } else {
                     let pipelines = client.list_pipelines(1).await?;
-                    let arr = pipelines.as_array().ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                    let arr = pipelines
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
                     if arr.is_empty() {
                         bail!("No pipelines found");
                     }
-                    arr[0]["id"].as_u64().ok_or_else(|| anyhow::anyhow!("Invalid pipeline ID"))?
+                    arr[0]["id"]
+                        .as_u64()
+                        .ok_or_else(|| anyhow::anyhow!("Invalid pipeline ID"))?
                 };
 
                 let jobs = client.list_pipeline_jobs(pipeline_id).await?;
-                let jobs_arr = jobs.as_array().ok_or_else(|| anyhow::anyhow!("No jobs found"))?;
+                let jobs_arr = jobs
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("No jobs found"))?;
 
                 // Find job by name or ID
                 let job_id: u64 = if let Ok(id) = job.parse::<u64>() {
@@ -318,7 +343,9 @@ async fn main() -> Result<()> {
                         .iter()
                         .find(|j| j["name"].as_str() == Some(&job))
                         .and_then(|j| j["id"].as_u64())
-                        .ok_or_else(|| anyhow::anyhow!("Job '{}' not found in pipeline {}", job, pipeline_id))?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Job '{}' not found in pipeline {}", job, pipeline_id)
+                        })?
                 };
 
                 let log = client.get_job_log(job_id).await?;
