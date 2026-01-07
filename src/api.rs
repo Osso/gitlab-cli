@@ -49,6 +49,26 @@ impl Client {
         serde_json::from_str(&body).context("Failed to parse JSON response")
     }
 
+    async fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .put(&url)
+            .json(body)
+            .send()
+            .await
+            .context("Failed to send request")?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {}: {}", status, body));
+        }
+
+        serde_json::from_str(&body).context("Failed to parse JSON response")
+    }
+
     fn encoded_project(&self) -> String {
         urlencoding::encode(&self.project).into_owned()
     }
@@ -140,6 +160,103 @@ impl Client {
 
         Ok(body)
     }
+
+    pub async fn set_automerge(&self, iid: u64, remove_source_branch: bool) -> Result<Value> {
+        self.put(
+            &format!(
+                "/projects/{}/merge_requests/{}/merge",
+                self.encoded_project(),
+                iid
+            ),
+            &serde_json::json!({
+                "merge_when_pipeline_succeeds": true,
+                "should_remove_source_branch": remove_source_branch
+            }),
+        )
+        .await
+    }
+
+    pub async fn list_issues(&self, params: &IssueListParams) -> Result<Value> {
+        let mut query_parts = vec![
+            format!("per_page={}", params.per_page),
+            format!("state={}", params.state),
+        ];
+
+        if let Some(author) = &params.author_username {
+            query_parts.push(format!("author_username={}", urlencoding::encode(author)));
+        }
+        if let Some(assignee) = &params.assignee_username {
+            query_parts.push(format!("assignee_username={}", urlencoding::encode(assignee)));
+        }
+        if let Some(labels) = &params.labels {
+            query_parts.push(format!("labels={}", urlencoding::encode(labels)));
+        }
+        if let Some(search) = &params.search {
+            query_parts.push(format!("search={}", urlencoding::encode(search)));
+        }
+        if let Some(after) = &params.created_after {
+            query_parts.push(format!("created_after={}", urlencoding::encode(after)));
+        }
+
+        let query = query_parts.join("&");
+        self.get(&format!(
+            "/projects/{}/issues?{}",
+            self.encoded_project(),
+            query
+        ))
+        .await
+    }
+
+    pub async fn get_issue(&self, iid: u64) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/issues/{}",
+            self.encoded_project(),
+            iid
+        ))
+        .await
+    }
+
+    async fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .context("Failed to send request")?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {}: {}", status, body));
+        }
+
+        serde_json::from_str(&body).context("Failed to parse JSON response")
+    }
+
+    pub async fn create_issue(&self, title: &str, description: Option<&str>, labels: Option<&str>, assignee: Option<&str>) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "title": title
+        });
+
+        if let Some(desc) = description {
+            body["description"] = serde_json::Value::String(desc.to_string());
+        }
+        if let Some(lbls) = labels {
+            body["labels"] = serde_json::Value::String(lbls.to_string());
+        }
+        if let Some(user) = assignee {
+            body["assignee_username"] = serde_json::Value::String(user.to_string());
+        }
+
+        self.post(
+            &format!("/projects/{}/issues", self.encoded_project()),
+            &body,
+        )
+        .await
+    }
 }
 
 #[derive(Default)]
@@ -152,4 +269,15 @@ pub struct MrListParams {
     pub updated_after: Option<String>,
     pub order_by: Option<String>,
     pub sort: Option<String>,
+}
+
+#[derive(Default)]
+pub struct IssueListParams {
+    pub per_page: u32,
+    pub state: String,
+    pub author_username: Option<String>,
+    pub assignee_username: Option<String>,
+    pub labels: Option<String>,
+    pub search: Option<String>,
+    pub created_after: Option<String>,
 }

@@ -5,7 +5,7 @@ mod config;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
-use api::{Client, MrListParams};
+use api::{Client, IssueListParams, MrListParams};
 use config::Config;
 
 #[derive(Parser)]
@@ -39,6 +39,11 @@ enum Commands {
     Mr {
         #[command(subcommand)]
         command: MrCommands,
+    },
+    /// Issue commands
+    Issue {
+        #[command(subcommand)]
+        command: IssueCommands,
     },
     /// CI/CD commands
     Ci {
@@ -102,6 +107,17 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Set merge request to auto-merge when pipeline succeeds
+    Automerge {
+        /// Merge request IID
+        iid: u64,
+        /// Keep source branch after merge
+        #[arg(long)]
+        keep_branch: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -122,6 +138,63 @@ enum CiCommands {
         /// Pipeline ID (defaults to latest)
         #[arg(long)]
         pipeline: Option<u64>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IssueCommands {
+    /// List issues
+    List {
+        /// Filter by state: opened, closed, all
+        #[arg(long, short, default_value = "opened")]
+        state: String,
+        /// Filter by author username
+        #[arg(long, short)]
+        author: Option<String>,
+        /// Filter by assignee username
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Filter by labels (comma-separated)
+        #[arg(long, short)]
+        labels: Option<String>,
+        /// Search in title and description
+        #[arg(long)]
+        search: Option<String>,
+        /// Filter by created after date (ISO 8601)
+        #[arg(long)]
+        created_after: Option<String>,
+        /// Number of results per page
+        #[arg(long, short = 'n', default_value = "20")]
+        per_page: u32,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Show issue details
+    Show {
+        /// Issue IID
+        iid: u64,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Create a new issue
+    Create {
+        /// Issue title
+        #[arg(long, short)]
+        title: String,
+        /// Issue description
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Labels (comma-separated)
+        #[arg(long, short)]
+        labels: Option<String>,
+        /// Assignee username
+        #[arg(long, short)]
+        assignee: Option<String>,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -268,6 +341,16 @@ async fn main() -> Result<()> {
                 let result = client.get_merge_request(iid).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             }
+            MrCommands::Automerge {
+                iid,
+                keep_branch,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.set_automerge(iid, !keep_branch).await?;
+                let title = result["title"].as_str().unwrap_or("");
+                println!("Auto-merge enabled for !{}: {}", iid, title);
+            }
         },
 
         Commands::Ci { command } => match command {
@@ -352,6 +435,53 @@ async fn main() -> Result<()> {
                 println!("{}", log);
             }
         },
+
+        Commands::Issue { command } => match command {
+            IssueCommands::List {
+                state,
+                author,
+                assignee,
+                labels,
+                search,
+                created_after,
+                per_page,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let params = IssueListParams {
+                    per_page,
+                    state,
+                    author_username: author,
+                    assignee_username: assignee,
+                    labels,
+                    search,
+                    created_after,
+                };
+                let result = client.list_issues(&params).await?;
+                print_issues(&result);
+            }
+            IssueCommands::Show { iid, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.get_issue(iid).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            IssueCommands::Create {
+                title,
+                description,
+                labels,
+                assignee,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client
+                    .create_issue(&title, description.as_deref(), labels.as_deref(), assignee.as_deref())
+                    .await?;
+                let iid = result["iid"].as_u64().unwrap_or(0);
+                let web_url = result["web_url"].as_str().unwrap_or("");
+                println!("Created issue #{}: {}", iid, title);
+                println!("{}", web_url);
+            }
+        },
     }
 
     Ok(())
@@ -369,6 +499,28 @@ fn print_mrs(value: &serde_json::Value) {
 
             println!("!{:<5} {} [{}]", iid, title, state);
             println!("       {} -> {} (@{})", source, target, author);
+        }
+    }
+}
+
+fn print_issues(value: &serde_json::Value) {
+    if let Some(issues) = value.as_array() {
+        for issue in issues {
+            let iid = issue["iid"].as_u64().unwrap_or(0);
+            let title = issue["title"].as_str().unwrap_or("");
+            let state = issue["state"].as_str().unwrap_or("");
+            let author = issue["author"]["username"].as_str().unwrap_or("");
+            let labels: Vec<&str> = issue["labels"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|l| l.as_str()).collect())
+                .unwrap_or_default();
+
+            println!("#{:<5} {} [{}]", iid, title, state);
+            if labels.is_empty() {
+                println!("       @{}", author);
+            } else {
+                println!("       @{} | {}", author, labels.join(", "));
+            }
         }
     }
 }
