@@ -176,6 +176,35 @@ impl Client {
         .await
     }
 
+    pub async fn create_merge_request(
+        &self,
+        title: &str,
+        source_branch: &str,
+        target_branch: &str,
+        description: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "title": title,
+            "source_branch": source_branch,
+            "target_branch": target_branch
+        });
+
+        if let Some(desc) = description {
+            body["description"] = serde_json::Value::String(desc.to_string());
+        }
+
+        self.post(
+            &format!("/projects/{}/merge_requests", self.encoded_project()),
+            &body,
+        )
+        .await
+    }
+
+    pub async fn get_project(&self) -> Result<Value> {
+        self.get(&format!("/projects/{}", self.encoded_project()))
+            .await
+    }
+
     pub async fn list_issues(&self, params: &IssueListParams) -> Result<Value> {
         let mut query_parts = vec![
             format!("per_page={}", params.per_page),

@@ -2,7 +2,7 @@ mod api;
 mod auth;
 mod config;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use api::{Client, IssueListParams, MrListParams};
@@ -112,6 +112,30 @@ enum MrCommands {
         /// Merge request IID
         iid: u64,
         /// Keep source branch after merge
+        #[arg(long)]
+        keep_branch: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Create a new merge request
+    Create {
+        /// Merge request title
+        #[arg(long, short)]
+        title: String,
+        /// Merge request description
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Source branch (defaults to current branch)
+        #[arg(long, short)]
+        source: Option<String>,
+        /// Target branch (defaults to default branch)
+        #[arg(long)]
+        target: Option<String>,
+        /// Set to auto-merge when pipeline succeeds
+        #[arg(long)]
+        auto_merge: bool,
+        /// Keep source branch after merge (only with --auto-merge)
         #[arg(long)]
         keep_branch: bool,
         /// Override default project
@@ -350,6 +374,65 @@ async fn main() -> Result<()> {
                 let result = client.set_automerge(iid, !keep_branch).await?;
                 let title = result["title"].as_str().unwrap_or("");
                 println!("Auto-merge enabled for !{}: {}", iid, title);
+            }
+            MrCommands::Create {
+                title,
+                description,
+                source,
+                target,
+                auto_merge,
+                keep_branch,
+                project,
+            } => {
+                // Get source branch from git if not provided
+                let source_branch = if let Some(s) = source {
+                    s
+                } else {
+                    let output = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .output()
+                        .context("Failed to get current git branch")?;
+                    if !output.status.success() {
+                        bail!("Failed to get current git branch");
+                    }
+                    String::from_utf8(output.stdout)?.trim().to_string()
+                };
+
+                let client = get_client(&mut config, project.as_deref()).await?;
+
+                // Get target branch from project default if not provided
+                let target_branch = if let Some(t) = target {
+                    t
+                } else {
+                    let project_info = client.get_project().await?;
+                    project_info["default_branch"]
+                        .as_str()
+                        .unwrap_or("main")
+                        .to_string()
+                };
+
+                let result = client
+                    .create_merge_request(&title, &source_branch, &target_branch, description.as_deref())
+                    .await?;
+
+                let iid = result["iid"].as_u64().unwrap_or(0);
+                let web_url = result["web_url"].as_str().unwrap_or("");
+
+                println!("Created !{}: {}", iid, title);
+                println!("{}", web_url);
+
+                if auto_merge {
+                    // Wait briefly for pipeline to start
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                    match client.set_automerge(iid, !keep_branch).await {
+                        Ok(_) => println!("Auto-merge enabled"),
+                        Err(e) => {
+                            eprintln!("Warning: Could not enable auto-merge: {}", e);
+                            eprintln!("Pipeline may not have started yet. Run: gitlab mr automerge {}", iid);
+                        }
+                    }
+                }
             }
         },
 
