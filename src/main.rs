@@ -50,6 +50,21 @@ enum Commands {
         #[command(subcommand)]
         command: CiCommands,
     },
+    /// Group commands
+    Group {
+        #[command(subcommand)]
+        command: GroupCommands,
+    },
+    /// Project commands
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+    /// Branch protection commands
+    Branch {
+        #[command(subcommand)]
+        command: BranchCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -142,6 +157,17 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Show merge request diff/changes
+    Diff {
+        /// Merge request IID
+        iid: u64,
+        /// Output as JSON instead of unified diff
+        #[arg(long)]
+        json: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +177,24 @@ enum CiCommands {
         /// Pipeline ID (defaults to latest)
         #[arg(long)]
         id: Option<u64>,
+        /// Branch name (defaults to current branch)
+        #[arg(long, short)]
+        branch: Option<String>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Wait for pipeline to complete
+    Wait {
+        /// Pipeline ID (defaults to latest)
+        #[arg(long)]
+        id: Option<u64>,
+        /// Branch name (defaults to current branch)
+        #[arg(long, short)]
+        branch: Option<String>,
+        /// Poll interval in seconds
+        #[arg(long, default_value = "30")]
+        interval: u64,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -162,6 +206,135 @@ enum CiCommands {
         /// Pipeline ID (defaults to latest)
         #[arg(long)]
         pipeline: Option<u64>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupCommands {
+    /// List group members
+    Members {
+        /// Group path (e.g., globalcomix)
+        group: String,
+        /// Number of results per page
+        #[arg(long, short = 'n', default_value = "100")]
+        per_page: u32,
+        /// Show email addresses (requires admin access)
+        #[arg(long, short)]
+        email: bool,
+    },
+    /// List subgroups
+    Subgroups {
+        /// Group path (e.g., globalcomix)
+        group: String,
+        /// Number of results per page
+        #[arg(long, short = 'n', default_value = "30")]
+        per_page: u32,
+    },
+    /// Show group details
+    Show {
+        /// Group path (e.g., globalcomix)
+        group: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommands {
+    /// Archive a project
+    Archive {
+        /// Project path (e.g., group/project)
+        project: String,
+    },
+    /// Unarchive a project
+    Unarchive {
+        /// Project path (e.g., group/project)
+        project: String,
+    },
+    /// List projects in a group
+    List {
+        /// Group path (e.g., globalcomix)
+        group: String,
+        /// Include archived projects (excluded by default)
+        #[arg(long, short)]
+        archived: bool,
+        /// Number of results per page
+        #[arg(long, short = 'n', default_value = "50")]
+        per_page: u32,
+    },
+    /// Manage push mirrors
+    Mirrors {
+        #[command(subcommand)]
+        command: MirrorCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum MirrorCommands {
+    /// List push mirrors for a project
+    List {
+        /// Project path (e.g., group/project)
+        project: String,
+    },
+    /// Create push mirror to another Git host (SSH - requires UI to complete setup)
+    Create {
+        /// Project path (e.g., group/project)
+        project: String,
+        /// Target repository SSH URL (e.g., ssh://git@github.com/org/repo.git)
+        url: String,
+        /// Only mirror protected branches
+        #[arg(long)]
+        only_protected: bool,
+    },
+    /// Create push mirror with HTTPS and password/token authentication
+    CreateHttps {
+        /// Project path (e.g., group/project)
+        project: String,
+        /// Target repository HTTPS URL (e.g., https://github.com/org/repo.git)
+        url: String,
+        /// Username for authentication
+        #[arg(long, short)]
+        user: String,
+        /// Password or token for authentication
+        #[arg(long, short = 'P')]
+        password: String,
+        /// Only mirror protected branches
+        #[arg(long)]
+        only_protected: bool,
+    },
+    /// Remove a push mirror
+    Remove {
+        /// Project path (e.g., group/project)
+        project: String,
+        /// Mirror ID to remove
+        mirror_id: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum BranchCommands {
+    /// List protected branches
+    List {
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Protect a branch
+    Protect {
+        /// Branch name to protect
+        branch: String,
+        /// Allow force push
+        #[arg(long)]
+        allow_force_push: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Unprotect a branch
+    Unprotect {
+        /// Branch name to unprotect
+        branch: String,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -248,6 +421,24 @@ async fn get_client(config: &mut Config, project_override: Option<&str>) -> Resu
         })?;
 
     Client::new(config.host(), token, &project)
+}
+
+/// Get a client for group operations (doesn't require a project)
+async fn get_group_client(config: &mut Config) -> Result<Client> {
+    // Check if OAuth2 token needs refresh
+    if let Some(oauth2) = &config.oauth2 {
+        if oauth2.is_expired() {
+            eprintln!("Token expired, refreshing...");
+            auth::refresh_token(config).await?;
+        }
+    }
+
+    let token = config.get_access_token().ok_or_else(|| {
+        anyhow::anyhow!("No token configured. Run: gitlab auth login --client-id <id>")
+    })?;
+
+    // Use a dummy project since group operations don't need it
+    Client::new(config.host(), token, "_")
 }
 
 #[tokio::main]
@@ -371,9 +562,58 @@ async fn main() -> Result<()> {
                 project,
             } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
-                let result = client.set_automerge(iid, !keep_branch).await?;
-                let title = result["title"].as_str().unwrap_or("");
-                println!("Auto-merge enabled for !{}: {}", iid, title);
+                let max_retries = 3;
+                let mut last_error = None;
+
+                for attempt in 0..max_retries {
+                    match client.set_automerge(iid, !keep_branch).await {
+                        Ok(result) => {
+                            let title = result["title"].as_str().unwrap_or("");
+                            println!("Auto-merge enabled for !{}: {}", iid, title);
+                            last_error = None;
+                            break;
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            if err_str.contains("405") && attempt < max_retries - 1 {
+                                eprintln!(
+                                    "Pipeline not ready, retrying in 10s... ({}/{})",
+                                    attempt + 1,
+                                    max_retries
+                                );
+                                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                last_error = Some(e);
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(e) = last_error {
+                    return Err(e);
+                }
+            }
+            MrCommands::Diff { iid, json, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.get_merge_request_changes(iid).await?;
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    // Output as unified diff format
+                    if let Some(changes) = result["changes"].as_array() {
+                        for change in changes {
+                            let old_path = change["old_path"].as_str().unwrap_or("");
+                            let new_path = change["new_path"].as_str().unwrap_or("");
+                            let diff = change["diff"].as_str().unwrap_or("");
+
+                            println!("--- a/{}", old_path);
+                            println!("+++ b/{}", new_path);
+                            print!("{}", diff);
+                        }
+                    }
+                }
             }
             MrCommands::Create {
                 title,
@@ -437,12 +677,12 @@ async fn main() -> Result<()> {
         },
 
         Commands::Ci { command } => match command {
-            CiCommands::Status { id, project } => {
+            CiCommands::Status { id, branch, project } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
                 let pipeline = if let Some(pid) = id {
                     client.get_pipeline(pid).await?
                 } else {
-                    let pipelines = client.list_pipelines(1).await?;
+                    let pipelines = client.list_pipelines_for_branch(branch.as_deref(), 1).await?;
                     let arr = pipelines
                         .as_array()
                         .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
@@ -471,6 +711,52 @@ async fn main() -> Result<()> {
                             job["status"].as_str().unwrap_or("?"),
                             job["stage"].as_str().unwrap_or("?")
                         );
+                    }
+                }
+            }
+            CiCommands::Wait { id, branch, interval, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+
+                loop {
+                    let pipeline = if let Some(pid) = id {
+                        client.get_pipeline(pid).await?
+                    } else {
+                        let pipelines = client.list_pipelines_for_branch(branch.as_deref(), 1).await?;
+                        let arr = pipelines
+                            .as_array()
+                            .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                        if arr.is_empty() {
+                            bail!("No pipelines found");
+                        }
+                        arr[0].clone()
+                    };
+
+                    let status = pipeline["status"].as_str().unwrap_or("unknown");
+                    let pipeline_ref = pipeline["ref"].as_str().unwrap_or("");
+                    let pipeline_id = pipeline["id"].as_u64().unwrap();
+
+                    // Print current status
+                    eprintln!(
+                        "Pipeline #{} - {} ({})",
+                        pipeline_id, status, pipeline_ref
+                    );
+
+                    // Check if pipeline is finished
+                    match status {
+                        "success" => {
+                            println!("Pipeline #{} succeeded", pipeline_id);
+                            break;
+                        }
+                        "failed" | "canceled" | "skipped" => {
+                            bail!("Pipeline #{} {}", pipeline_id, status);
+                        }
+                        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => {
+                            // Still running, wait and check again
+                            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                        }
+                        _ => {
+                            bail!("Unknown pipeline status: {}", status);
+                        }
                     }
                 }
             }
@@ -565,6 +851,100 @@ async fn main() -> Result<()> {
                 println!("{}", web_url);
             }
         },
+
+        Commands::Group { command } => match command {
+            GroupCommands::Members { group, per_page, email } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.list_group_members(&group, per_page, email).await?;
+                print_group_members(&result, email);
+            }
+            GroupCommands::Subgroups { group, per_page } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.list_group_subgroups(&group, per_page).await?;
+                print_subgroups(&result);
+            }
+            GroupCommands::Show { group } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.get_group(&group).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        },
+
+        Commands::Project { command } => match command {
+            ProjectCommands::Archive { project } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.archive_project(&project).await?;
+                let name = result["path_with_namespace"].as_str().unwrap_or(&project);
+                println!("Archived: {}", name);
+            }
+            ProjectCommands::Unarchive { project } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.unarchive_project(&project).await?;
+                let name = result["path_with_namespace"].as_str().unwrap_or(&project);
+                println!("Unarchived: {}", name);
+            }
+            ProjectCommands::List { group, archived, per_page } => {
+                let client = get_group_client(&mut config).await?;
+                let result = client.list_group_projects(&group, per_page, archived).await?;
+                print_projects(&result);
+            }
+            ProjectCommands::Mirrors { command } => match command {
+                MirrorCommands::List { project } => {
+                    let client = get_group_client(&mut config).await?;
+                    let result = client.list_push_mirrors(&project).await?;
+                    print_mirrors(&result);
+                }
+                MirrorCommands::Create { project, url, only_protected } => {
+                    let client = get_group_client(&mut config).await?;
+                    let result = client.create_push_mirror(&project, &url, true, only_protected).await?;
+                    let id = result["id"].as_u64().unwrap_or(0);
+                    let mirror_url = result["url"].as_str().unwrap_or(&url);
+                    println!("Created push mirror (id: {}) -> {}", id, mirror_url);
+
+                    // Fetch SSH public key via dedicated endpoint
+                    if let Ok(ssh_key) = client.get_push_mirror_public_key(&project, id).await {
+                        if !ssh_key.is_empty() {
+                            println!("\nSSH public key (add as deploy key with write access):");
+                            println!("{}", ssh_key);
+                        }
+                    }
+
+                    // Note about host keys
+                    println!("\nNOTE: Go to GitLab UI and click 'Detect host keys' to complete setup:");
+                    println!("https://gitlab.com/{}/-/settings/repository#js-push-remote-settings", project);
+                }
+                MirrorCommands::CreateHttps { project, url, user, password, only_protected } => {
+                    let client = get_group_client(&mut config).await?;
+                    let result = client.create_push_mirror_https(&project, &url, &user, &password, only_protected).await?;
+                    let id = result["id"].as_u64().unwrap_or(0);
+                    let mirror_url = result["url"].as_str().unwrap_or(&url);
+                    println!("Created HTTPS push mirror (id: {}) -> {}", id, mirror_url);
+                }
+                MirrorCommands::Remove { project, mirror_id } => {
+                    let client = get_group_client(&mut config).await?;
+                    client.delete_push_mirror(&project, mirror_id).await?;
+                    println!("Removed mirror {}", mirror_id);
+                }
+            }
+        },
+
+        Commands::Branch { command } => match command {
+            BranchCommands::List { project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.list_protected_branches().await?;
+                print_protected_branches(&result);
+            }
+            BranchCommands::Protect { branch, allow_force_push, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                client.protect_branch(&branch, allow_force_push).await?;
+                println!("Protected branch: {}", branch);
+            }
+            BranchCommands::Unprotect { branch, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                client.unprotect_branch(&branch).await?;
+                println!("Unprotected branch: {}", branch);
+            }
+        },
     }
 
     Ok(())
@@ -604,6 +984,122 @@ fn print_issues(value: &serde_json::Value) {
             } else {
                 println!("       @{} | {}", author, labels.join(", "));
             }
+        }
+    }
+}
+
+fn access_level_name(level: u64) -> &'static str {
+    match level {
+        10 => "Guest",
+        20 => "Reporter",
+        30 => "Developer",
+        40 => "Maintainer",
+        50 => "Owner",
+        _ => "Unknown",
+    }
+}
+
+fn print_group_members(value: &serde_json::Value, show_email: bool) {
+    if let Some(members) = value.as_array() {
+        if members.is_empty() {
+            println!("No members found");
+            return;
+        }
+        for member in members {
+            let username = member["username"].as_str().unwrap_or("");
+            let name = member["name"].as_str().unwrap_or("");
+            let access_level = member["access_level"].as_u64().unwrap_or(0);
+            let access = access_level_name(access_level);
+            if show_email {
+                let email = member["email"].as_str().unwrap_or("-");
+                println!("{:<25} {:<12} {:<35} {}", username, access, email, name);
+            } else {
+                println!("{:<25} {:<12} {}", username, access, name);
+            }
+        }
+    }
+}
+
+fn print_subgroups(value: &serde_json::Value) {
+    if let Some(groups) = value.as_array() {
+        if groups.is_empty() {
+            println!("No subgroups found");
+            return;
+        }
+        for group in groups {
+            let path = group["full_path"].as_str().unwrap_or("");
+            let name = group["name"].as_str().unwrap_or("");
+            let visibility = group["visibility"].as_str().unwrap_or("");
+            println!("{:<40} {:<10} {}", path, visibility, name);
+        }
+    }
+}
+
+fn print_projects(value: &serde_json::Value) {
+    if let Some(projects) = value.as_array() {
+        if projects.is_empty() {
+            println!("No projects found");
+            return;
+        }
+        for project in projects {
+            let path = project["path_with_namespace"].as_str().unwrap_or("");
+            let visibility = project["visibility"].as_str().unwrap_or("");
+            let archived = project["archived"].as_bool().unwrap_or(false);
+            let default_branch = project["default_branch"].as_str().unwrap_or("-");
+            let status = if archived { "[archived]" } else { "" };
+            println!("{:<45} {:<10} {:<10} {}", path, visibility, default_branch, status);
+        }
+    }
+}
+
+fn print_mirrors(value: &serde_json::Value) {
+    if let Some(mirrors) = value.as_array() {
+        if mirrors.is_empty() {
+            println!("No push mirrors configured");
+            return;
+        }
+        for mirror in mirrors {
+            let id = mirror["id"].as_u64().unwrap_or(0);
+            let url = mirror["url"].as_str().unwrap_or("");
+            let enabled = mirror["enabled"].as_bool().unwrap_or(false);
+            let only_protected = mirror["only_protected_branches"].as_bool().unwrap_or(false);
+            let auth_method = mirror["auth_method"].as_str().unwrap_or("password");
+            let last_update = mirror["last_update_at"].as_str().unwrap_or("-");
+            let last_error = mirror["last_error"].as_str();
+
+            let status = if enabled { "enabled" } else { "disabled" };
+            let protected = if only_protected { "[protected-only]" } else { "[all-branches]" };
+
+            println!("{:<6} {:<10} {} {}", id, status, protected, url);
+            println!("       Auth: {}", auth_method);
+            if let Some(err) = last_error {
+                if !err.is_empty() {
+                    println!("       Last error: {}", err);
+                }
+            }
+            println!("       Last sync: {}", last_update);
+
+            // Show SSH public key if using ssh_public_key auth
+            if auth_method == "ssh_public_key" {
+                if let Some(ssh_key) = mirror["ssh_public_key"].as_str() {
+                    println!("       SSH key: {}", ssh_key);
+                }
+            }
+        }
+    }
+}
+
+fn print_protected_branches(value: &serde_json::Value) {
+    if let Some(branches) = value.as_array() {
+        if branches.is_empty() {
+            println!("No protected branches");
+            return;
+        }
+        for branch in branches {
+            let name = branch["name"].as_str().unwrap_or("");
+            let allow_force_push = branch["allow_force_push"].as_bool().unwrap_or(false);
+            let force_push_str = if allow_force_push { "[force-push-allowed]" } else { "" };
+            println!("{} {}", name, force_push_str);
         }
     }
 }

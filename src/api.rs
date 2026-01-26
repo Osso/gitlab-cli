@@ -117,12 +117,19 @@ impl Client {
     }
 
     pub async fn list_pipelines(&self, per_page: u32) -> Result<Value> {
-        self.get(&format!(
+        self.list_pipelines_for_branch(None, per_page).await
+    }
+
+    pub async fn list_pipelines_for_branch(&self, branch: Option<&str>, per_page: u32) -> Result<Value> {
+        let mut url = format!(
             "/projects/{}/pipelines?per_page={}",
             self.encoded_project(),
             per_page
-        ))
-        .await
+        );
+        if let Some(ref_name) = branch {
+            url.push_str(&format!("&ref={}", urlencoding::encode(ref_name)));
+        }
+        self.get(&url).await
     }
 
     pub async fn get_pipeline(&self, id: u64) -> Result<Value> {
@@ -236,6 +243,15 @@ impl Client {
         .await
     }
 
+    pub async fn get_merge_request_changes(&self, iid: u64) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/merge_requests/{}/changes",
+            self.encoded_project(),
+            iid
+        ))
+        .await
+    }
+
     pub async fn get_issue(&self, iid: u64) -> Result<Value> {
         self.get(&format!(
             "/projects/{}/issues/{}",
@@ -284,6 +300,169 @@ impl Client {
             &format!("/projects/{}/issues", self.encoded_project()),
             &body,
         )
+        .await
+    }
+
+    // Group operations (don't require project)
+    pub async fn list_group_members(&self, group: &str, per_page: u32, show_email: bool) -> Result<Value> {
+        let encoded_group = urlencoding::encode(group);
+        if show_email {
+            // Use billable_members endpoint which includes emails for group owners
+            self.get(&format!("/groups/{}/billable_members?per_page={}", encoded_group, per_page)).await
+        } else {
+            self.get(&format!("/groups/{}/members?per_page={}", encoded_group, per_page)).await
+        }
+    }
+
+    pub async fn list_group_subgroups(&self, group: &str, per_page: u32) -> Result<Value> {
+        let encoded_group = urlencoding::encode(group);
+        self.get(&format!("/groups/{}/subgroups?per_page={}", encoded_group, per_page)).await
+    }
+
+    pub async fn get_group(&self, group: &str) -> Result<Value> {
+        let encoded_group = urlencoding::encode(group);
+        self.get(&format!("/groups/{}", encoded_group)).await
+    }
+
+    // Project operations
+    pub async fn archive_project(&self, project: &str) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+        self.post(&format!("/projects/{}/archive", encoded_project), &serde_json::json!({})).await
+    }
+
+    pub async fn unarchive_project(&self, project: &str) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+        self.post(&format!("/projects/{}/unarchive", encoded_project), &serde_json::json!({})).await
+    }
+
+    pub async fn list_group_projects(&self, group: &str, per_page: u32, include_archived: bool) -> Result<Value> {
+        let encoded_group = urlencoding::encode(group);
+        let archived_param = if include_archived { "&archived=true" } else { "" };
+        self.get(&format!("/groups/{}/projects?per_page={}{}", encoded_group, per_page, archived_param)).await
+    }
+
+    // Push mirror operations
+    pub async fn create_push_mirror(
+        &self,
+        project: &str,
+        url: &str,
+        enabled: bool,
+        only_protected: bool,
+    ) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+
+        // Ensure SSH URLs have password placeholder for proper auth_method detection
+        // ssh://git@host -> ssh://git:x@host
+        let mirror_url = if url.starts_with("ssh://git@") {
+            url.replacen("ssh://git@", "ssh://git:x@", 1)
+        } else {
+            url.to_string()
+        };
+
+        self.post(
+            &format!("/projects/{}/remote_mirrors", encoded_project),
+            &serde_json::json!({
+                "url": mirror_url,
+                "enabled": enabled,
+                "only_protected_branches": only_protected,
+                "auth_method": "ssh_public_key"
+            })
+        ).await
+    }
+
+    pub async fn create_push_mirror_https(
+        &self,
+        project: &str,
+        url: &str,
+        user: &str,
+        password: &str,
+        only_protected: bool,
+    ) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+
+        // Build URL with credentials: https://user:password@host/path
+        let mirror_url = if url.starts_with("https://") {
+            let rest = url.strip_prefix("https://").unwrap();
+            let encoded_user = urlencoding::encode(user);
+            let encoded_password = urlencoding::encode(password);
+            format!("https://{}:{}@{}", encoded_user, encoded_password, rest)
+        } else {
+            url.to_string()
+        };
+
+        self.post(
+            &format!("/projects/{}/remote_mirrors", encoded_project),
+            &serde_json::json!({
+                "url": mirror_url,
+                "enabled": true,
+                "only_protected_branches": only_protected,
+                "auth_method": "password"
+            })
+        ).await
+    }
+
+    pub async fn get_push_mirror(&self, project: &str, mirror_id: u64) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+        self.get(&format!("/projects/{}/remote_mirrors/{}", encoded_project, mirror_id)).await
+    }
+
+    pub async fn get_push_mirror_public_key(&self, project: &str, mirror_id: u64) -> Result<String> {
+        let encoded_project = urlencoding::encode(project);
+        let result = self.get(&format!("/projects/{}/remote_mirrors/{}/public_key", encoded_project, mirror_id)).await?;
+        Ok(result["public_key"].as_str().unwrap_or("").to_string())
+    }
+
+    pub async fn list_push_mirrors(&self, project: &str) -> Result<Value> {
+        let encoded_project = urlencoding::encode(project);
+        self.get(&format!("/projects/{}/remote_mirrors", encoded_project)).await
+    }
+
+    pub async fn delete_push_mirror(&self, project: &str, mirror_id: u64) -> Result<()> {
+        let encoded_project = urlencoding::encode(project);
+        self.delete(&format!("/projects/{}/remote_mirrors/{}", encoded_project, mirror_id)).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .context("Failed to send request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await?;
+            return Err(anyhow!("HTTP {}: {}", status, body));
+        }
+        Ok(())
+    }
+
+    // Protected branch operations
+    pub async fn list_protected_branches(&self) -> Result<Value> {
+        self.get(&format!("/projects/{}/protected_branches", self.encoded_project()))
+            .await
+    }
+
+    pub async fn protect_branch(&self, branch: &str, allow_force_push: bool) -> Result<Value> {
+        self.post(
+            &format!("/projects/{}/protected_branches", self.encoded_project()),
+            &serde_json::json!({
+                "name": branch,
+                "allow_force_push": allow_force_push
+            }),
+        )
+        .await
+    }
+
+    pub async fn unprotect_branch(&self, branch: &str) -> Result<()> {
+        let encoded_branch = urlencoding::encode(branch);
+        self.delete(&format!(
+            "/projects/{}/protected_branches/{}",
+            self.encoded_project(),
+            encoded_branch
+        ))
         .await
     }
 }
