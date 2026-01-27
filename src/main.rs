@@ -65,6 +65,11 @@ enum Commands {
         #[command(subcommand)]
         command: BranchCommands,
     },
+    /// Webhook management commands
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -180,6 +185,9 @@ enum CiCommands {
         /// Branch name (defaults to current branch)
         #[arg(long, short)]
         branch: Option<String>,
+        /// Merge request IID
+        #[arg(long, short)]
+        mr: Option<u64>,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -310,6 +318,13 @@ enum MirrorCommands {
         /// Mirror ID to remove
         mirror_id: u64,
     },
+    /// Trigger a push mirror sync
+    Sync {
+        /// Project path (e.g., group/project)
+        project: String,
+        /// Mirror ID to sync
+        mirror_id: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -335,6 +350,123 @@ enum BranchCommands {
     Unprotect {
         /// Branch name to unprotect
         branch: String,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebhookCommands {
+    /// List webhooks for a project
+    List {
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Show webhook details
+    Show {
+        /// Webhook ID
+        id: u64,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Create a new webhook
+    Create {
+        /// Webhook URL
+        #[arg(long, short)]
+        url: String,
+        /// Secret token for webhook verification
+        #[arg(long, short)]
+        token: Option<String>,
+        /// Enable push events
+        #[arg(long)]
+        push: bool,
+        /// Enable merge request events
+        #[arg(long)]
+        merge_request: bool,
+        /// Enable issue events
+        #[arg(long)]
+        issue: bool,
+        /// Enable pipeline events
+        #[arg(long)]
+        pipeline: bool,
+        /// Enable tag push events
+        #[arg(long)]
+        tag: bool,
+        /// Enable note (comment) events
+        #[arg(long)]
+        note: bool,
+        /// Enable job events
+        #[arg(long)]
+        job: bool,
+        /// Enable release events
+        #[arg(long)]
+        release: bool,
+        /// Enable SSL verification
+        #[arg(long, default_value = "true")]
+        ssl_verification: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Update an existing webhook
+    Update {
+        /// Webhook ID
+        id: u64,
+        /// Webhook URL
+        #[arg(long, short)]
+        url: Option<String>,
+        /// Secret token for webhook verification
+        #[arg(long, short)]
+        token: Option<String>,
+        /// Enable push events
+        #[arg(long)]
+        push: Option<bool>,
+        /// Enable merge request events
+        #[arg(long)]
+        merge_request: Option<bool>,
+        /// Enable issue events
+        #[arg(long)]
+        issue: Option<bool>,
+        /// Enable pipeline events
+        #[arg(long)]
+        pipeline: Option<bool>,
+        /// Enable tag push events
+        #[arg(long)]
+        tag: Option<bool>,
+        /// Enable note (comment) events
+        #[arg(long)]
+        note: Option<bool>,
+        /// Enable job events
+        #[arg(long)]
+        job: Option<bool>,
+        /// Enable release events
+        #[arg(long)]
+        release: Option<bool>,
+        /// Enable SSL verification
+        #[arg(long)]
+        ssl_verification: Option<bool>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Delete a webhook
+    Delete {
+        /// Webhook ID
+        id: u64,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Test a webhook by sending a test event
+    Test {
+        /// Webhook ID
+        id: u64,
+        /// Event type to test (push, tag_push, note, issue, merge_request, etc.)
+        #[arg(long, short, default_value = "push")]
+        event: String,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -677,10 +809,19 @@ async fn main() -> Result<()> {
         },
 
         Commands::Ci { command } => match command {
-            CiCommands::Status { id, branch, project } => {
+            CiCommands::Status { id, branch, mr, project } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
                 let pipeline = if let Some(pid) = id {
                     client.get_pipeline(pid).await?
+                } else if let Some(mr_iid) = mr {
+                    let pipelines = client.list_mr_pipelines(mr_iid).await?;
+                    let arr = pipelines
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("No pipelines found for MR !{}", mr_iid))?;
+                    if arr.is_empty() {
+                        bail!("No pipelines found for MR !{}", mr_iid);
+                    }
+                    arr[0].clone()
                 } else {
                     let pipelines = client.list_pipelines_for_branch(branch.as_deref(), 1).await?;
                     let arr = pipelines
@@ -925,6 +1066,100 @@ async fn main() -> Result<()> {
                     client.delete_push_mirror(&project, mirror_id).await?;
                     println!("Removed mirror {}", mirror_id);
                 }
+                MirrorCommands::Sync { project, mirror_id } => {
+                    let client = get_group_client(&mut config).await?;
+                    client.sync_push_mirror(&project, mirror_id).await?;
+                    println!("Triggered sync for mirror {}", mirror_id);
+                }
+            }
+        },
+
+        Commands::Webhook { command } => match command {
+            WebhookCommands::List { project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.list_webhooks().await?;
+                print_webhooks(&result);
+            }
+            WebhookCommands::Show { id, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client.get_webhook(id).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            WebhookCommands::Create {
+                url,
+                token,
+                push,
+                merge_request,
+                issue,
+                pipeline,
+                tag,
+                note,
+                job,
+                release,
+                ssl_verification,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let params = api::WebhookCreateParams {
+                    url,
+                    token,
+                    push_events: push,
+                    merge_requests_events: merge_request,
+                    issues_events: issue,
+                    pipeline_events: pipeline,
+                    tag_push_events: tag,
+                    note_events: note,
+                    job_events: job,
+                    releases_events: release,
+                    enable_ssl_verification: ssl_verification,
+                };
+                let result = client.create_webhook(&params).await?;
+                let hook_id = result["id"].as_u64().unwrap_or(0);
+                let hook_url = result["url"].as_str().unwrap_or("");
+                println!("Created webhook {} -> {}", hook_id, hook_url);
+            }
+            WebhookCommands::Update {
+                id,
+                url,
+                token,
+                push,
+                merge_request,
+                issue,
+                pipeline,
+                tag,
+                note,
+                job,
+                release,
+                ssl_verification,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let params = api::WebhookUpdateParams {
+                    url,
+                    token,
+                    push_events: push,
+                    merge_requests_events: merge_request,
+                    issues_events: issue,
+                    pipeline_events: pipeline,
+                    tag_push_events: tag,
+                    note_events: note,
+                    job_events: job,
+                    releases_events: release,
+                    enable_ssl_verification: ssl_verification,
+                };
+                let result = client.update_webhook(id, &params).await?;
+                let hook_url = result["url"].as_str().unwrap_or("");
+                println!("Updated webhook {} -> {}", id, hook_url);
+            }
+            WebhookCommands::Delete { id, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                client.delete_webhook(id).await?;
+                println!("Deleted webhook {}", id);
+            }
+            WebhookCommands::Test { id, event, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                client.test_webhook(id, &event).await?;
+                println!("Sent test {} event to webhook {}", event, id);
             }
         },
 
@@ -1084,6 +1319,53 @@ fn print_mirrors(value: &serde_json::Value) {
                 if let Some(ssh_key) = mirror["ssh_public_key"].as_str() {
                     println!("       SSH key: {}", ssh_key);
                 }
+            }
+        }
+    }
+}
+
+fn print_webhooks(value: &serde_json::Value) {
+    if let Some(hooks) = value.as_array() {
+        if hooks.is_empty() {
+            println!("No webhooks configured");
+            return;
+        }
+        for hook in hooks {
+            let id = hook["id"].as_u64().unwrap_or(0);
+            let url = hook["url"].as_str().unwrap_or("");
+            let ssl = hook["enable_ssl_verification"].as_bool().unwrap_or(true);
+
+            // Collect enabled events
+            let mut events = vec![];
+            if hook["push_events"].as_bool().unwrap_or(false) {
+                events.push("push");
+            }
+            if hook["merge_requests_events"].as_bool().unwrap_or(false) {
+                events.push("merge_request");
+            }
+            if hook["issues_events"].as_bool().unwrap_or(false) {
+                events.push("issue");
+            }
+            if hook["pipeline_events"].as_bool().unwrap_or(false) {
+                events.push("pipeline");
+            }
+            if hook["tag_push_events"].as_bool().unwrap_or(false) {
+                events.push("tag");
+            }
+            if hook["note_events"].as_bool().unwrap_or(false) {
+                events.push("note");
+            }
+            if hook["job_events"].as_bool().unwrap_or(false) {
+                events.push("job");
+            }
+            if hook["releases_events"].as_bool().unwrap_or(false) {
+                events.push("release");
+            }
+
+            let ssl_status = if ssl { "" } else { " [ssl-off]" };
+            println!("{:<6} {}{}", id, url, ssl_status);
+            if !events.is_empty() {
+                println!("       Events: {}", events.join(", "));
             }
         }
     }

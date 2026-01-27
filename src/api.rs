@@ -252,6 +252,15 @@ impl Client {
         .await
     }
 
+    pub async fn list_mr_pipelines(&self, iid: u64) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/merge_requests/{}/pipelines",
+            self.encoded_project(),
+            iid
+        ))
+        .await
+    }
+
     pub async fn get_issue(&self, iid: u64) -> Result<Value> {
         self.get(&format!(
             "/projects/{}/issues/{}",
@@ -279,6 +288,24 @@ impl Client {
         }
 
         serde_json::from_str(&body).context("Failed to parse JSON response")
+    }
+
+    async fn post_empty(&self, path: &str) -> Result<()> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .post(&url)
+            .send()
+            .await
+            .context("Failed to send request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await?;
+            return Err(anyhow!("HTTP {}: {}", status, body));
+        }
+
+        Ok(())
     }
 
     pub async fn create_issue(&self, title: &str, description: Option<&str>, labels: Option<&str>, assignee: Option<&str>) -> Result<Value> {
@@ -422,6 +449,11 @@ impl Client {
         self.delete(&format!("/projects/{}/remote_mirrors/{}", encoded_project, mirror_id)).await
     }
 
+    pub async fn sync_push_mirror(&self, project: &str, mirror_id: u64) -> Result<()> {
+        let encoded_project = urlencoding::encode(project);
+        self.post_empty(&format!("/projects/{}/remote_mirrors/{}/sync", encoded_project, mirror_id)).await
+    }
+
     async fn delete(&self, path: &str) -> Result<()> {
         let url = format!("{}{}", self.base_url, path);
         let response = self
@@ -465,6 +497,112 @@ impl Client {
         ))
         .await
     }
+
+    // Webhook operations
+    pub async fn list_webhooks(&self) -> Result<Value> {
+        self.get(&format!("/projects/{}/hooks", self.encoded_project()))
+            .await
+    }
+
+    pub async fn get_webhook(&self, hook_id: u64) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/hooks/{}",
+            self.encoded_project(),
+            hook_id
+        ))
+        .await
+    }
+
+    pub async fn create_webhook(&self, params: &WebhookCreateParams) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "url": params.url,
+            "push_events": params.push_events,
+            "merge_requests_events": params.merge_requests_events,
+            "issues_events": params.issues_events,
+            "pipeline_events": params.pipeline_events,
+            "tag_push_events": params.tag_push_events,
+            "note_events": params.note_events,
+            "job_events": params.job_events,
+            "releases_events": params.releases_events,
+            "enable_ssl_verification": params.enable_ssl_verification
+        });
+
+        if let Some(token) = &params.token {
+            body["token"] = serde_json::Value::String(token.clone());
+        }
+
+        self.post(
+            &format!("/projects/{}/hooks", self.encoded_project()),
+            &body,
+        )
+        .await
+    }
+
+    pub async fn update_webhook(&self, hook_id: u64, params: &WebhookUpdateParams) -> Result<Value> {
+        let mut body = serde_json::json!({});
+
+        if let Some(url) = &params.url {
+            body["url"] = serde_json::Value::String(url.clone());
+        }
+        if let Some(token) = &params.token {
+            body["token"] = serde_json::Value::String(token.clone());
+        }
+        if let Some(v) = params.push_events {
+            body["push_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.merge_requests_events {
+            body["merge_requests_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.issues_events {
+            body["issues_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.pipeline_events {
+            body["pipeline_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.tag_push_events {
+            body["tag_push_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.note_events {
+            body["note_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.job_events {
+            body["job_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.releases_events {
+            body["releases_events"] = serde_json::Value::Bool(v);
+        }
+        if let Some(v) = params.enable_ssl_verification {
+            body["enable_ssl_verification"] = serde_json::Value::Bool(v);
+        }
+
+        self.put(
+            &format!("/projects/{}/hooks/{}", self.encoded_project(), hook_id),
+            &body,
+        )
+        .await
+    }
+
+    pub async fn delete_webhook(&self, hook_id: u64) -> Result<()> {
+        self.delete(&format!(
+            "/projects/{}/hooks/{}",
+            self.encoded_project(),
+            hook_id
+        ))
+        .await
+    }
+
+    pub async fn test_webhook(&self, hook_id: u64, trigger: &str) -> Result<Value> {
+        self.post(
+            &format!(
+                "/projects/{}/hooks/{}/test/{}",
+                self.encoded_project(),
+                hook_id,
+                trigger
+            ),
+            &serde_json::json!({}),
+        )
+        .await
+    }
 }
 
 #[derive(Default)]
@@ -488,4 +626,32 @@ pub struct IssueListParams {
     pub labels: Option<String>,
     pub search: Option<String>,
     pub created_after: Option<String>,
+}
+
+pub struct WebhookCreateParams {
+    pub url: String,
+    pub token: Option<String>,
+    pub push_events: bool,
+    pub merge_requests_events: bool,
+    pub issues_events: bool,
+    pub pipeline_events: bool,
+    pub tag_push_events: bool,
+    pub note_events: bool,
+    pub job_events: bool,
+    pub releases_events: bool,
+    pub enable_ssl_verification: bool,
+}
+
+pub struct WebhookUpdateParams {
+    pub url: Option<String>,
+    pub token: Option<String>,
+    pub push_events: Option<bool>,
+    pub merge_requests_events: Option<bool>,
+    pub issues_events: Option<bool>,
+    pub pipeline_events: Option<bool>,
+    pub tag_push_events: Option<bool>,
+    pub note_events: Option<bool>,
+    pub job_events: Option<bool>,
+    pub releases_events: Option<bool>,
+    pub enable_ssl_verification: Option<bool>,
 }
