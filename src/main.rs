@@ -203,6 +203,42 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Approve a merge request
+    Approve {
+        /// Merge request IID
+        iid: u64,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// List discussion threads on a merge request
+    Discussions {
+        /// Merge request IID
+        iid: u64,
+        /// Only show unresolved threads
+        #[arg(long, short)]
+        unresolved: bool,
+        /// Number of discussions to fetch
+        #[arg(long, short = 'n', default_value = "50")]
+        per_page: u32,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Reply to a discussion thread on a merge request
+    Reply {
+        /// Merge request IID
+        iid: u64,
+        /// Discussion ID to reply to
+        #[arg(long, short)]
+        discussion: String,
+        /// Reply message (reads from stdin if not provided)
+        #[arg(long, short)]
+        message: Option<String>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -825,6 +861,121 @@ async fn main() -> Result<()> {
                 let result = client.create_mr_note(iid, &body).await?;
                 let note_id = result["id"].as_u64().unwrap_or(0);
                 println!("Comment #{} added to !{}", note_id, iid);
+            }
+            MrCommands::Approve { iid, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                client.approve_merge_request(iid).await?;
+                println!("Approved !{}", iid);
+            }
+            MrCommands::Discussions {
+                iid,
+                unresolved,
+                per_page,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let discussions = client.list_mr_discussions(iid, per_page).await?;
+                if let Some(arr) = discussions.as_array() {
+                    let threads: Vec<_> = arr
+                        .iter()
+                        .filter(|d| {
+                            // Skip individual notes (non-threaded)
+                            let notes = d["notes"].as_array();
+                            let is_thread = notes.map(|n| n.len() > 1).unwrap_or(false)
+                                || notes
+                                    .and_then(|n| n.first())
+                                    .and_then(|n| n["resolvable"].as_bool())
+                                    .unwrap_or(false);
+                            if !is_thread {
+                                return false;
+                            }
+                            if unresolved {
+                                // Keep only threads with at least one unresolved note
+                                notes
+                                    .map(|n| {
+                                        n.iter().any(|note| {
+                                            note["resolvable"].as_bool().unwrap_or(false)
+                                                && !note["resolved"].as_bool().unwrap_or(true)
+                                        })
+                                    })
+                                    .unwrap_or(false)
+                            } else {
+                                true
+                            }
+                        })
+                        .collect();
+
+                    if threads.is_empty() {
+                        let qualifier = if unresolved { "unresolved " } else { "" };
+                        println!("No {}discussion threads on !{}", qualifier, iid);
+                    } else {
+                        for d in &threads {
+                            let disc_id = d["id"].as_str().unwrap_or("?");
+                            let notes = d["notes"].as_array();
+                            let first = notes.and_then(|n| n.first());
+
+                            // File position info
+                            let position = first.and_then(|n| n["position"].as_object());
+                            if let Some(pos) = position {
+                                let path = pos
+                                    .get("new_path")
+                                    .or(pos.get("old_path"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let line = pos
+                                    .get("new_line")
+                                    .or(pos.get("old_line"))
+                                    .and_then(|v| v.as_u64())
+                                    .map(|l| l.to_string())
+                                    .unwrap_or_default();
+                                println!("--- {} ({}:{})", disc_id, path, line);
+                            } else {
+                                println!("--- {}", disc_id);
+                            }
+
+                            let resolved = first
+                                .and_then(|n| n["resolved"].as_bool())
+                                .unwrap_or(false);
+                            println!("  resolved: {}", resolved);
+
+                            if let Some(notes_arr) = notes {
+                                for note in notes_arr {
+                                    let author =
+                                        note["author"]["username"].as_str().unwrap_or("?");
+                                    let body = note["body"].as_str().unwrap_or("");
+                                    println!("  @{}: {}", author, body);
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
+            }
+            MrCommands::Reply {
+                iid,
+                discussion,
+                message,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let body = match message {
+                    Some(m) => m,
+                    None => {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        std::io::stdin().read_to_string(&mut buf)?;
+                        buf
+                    }
+                };
+                if body.trim().is_empty() {
+                    bail!("Reply body is empty");
+                }
+                let result = client.reply_to_discussion(iid, &discussion, &body).await?;
+                let note_id = result["id"].as_u64().unwrap_or(0);
+                println!(
+                    "Reply #{} added to discussion {} on !{}",
+                    note_id, discussion, iid
+                );
             }
             MrCommands::Create {
                 title,

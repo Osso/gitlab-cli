@@ -295,6 +295,43 @@ impl Client {
         .await
     }
 
+    pub async fn approve_merge_request(&self, iid: u64) -> Result<()> {
+        self.post_empty(&format!(
+            "/projects/{}/merge_requests/{}/approve",
+            self.encoded_project(),
+            iid
+        ))
+        .await
+    }
+
+    pub async fn list_mr_discussions(&self, iid: u64, per_page: u32) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/merge_requests/{}/discussions?per_page={}",
+            self.encoded_project(),
+            iid,
+            per_page
+        ))
+        .await
+    }
+
+    pub async fn reply_to_discussion(
+        &self,
+        iid: u64,
+        discussion_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        self.post(
+            &format!(
+                "/projects/{}/merge_requests/{}/discussions/{}/notes",
+                self.encoded_project(),
+                iid,
+                discussion_id
+            ),
+            &serde_json::json!({ "body": body }),
+        )
+        .await
+    }
+
     pub async fn get_issue(&self, iid: u64) -> Result<Value> {
         self.get(&format!(
             "/projects/{}/issues/{}",
