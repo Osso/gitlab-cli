@@ -173,6 +173,17 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Add a comment to a merge request
+    Comment {
+        /// Merge request IID
+        iid: u64,
+        /// Comment body (reads from stdin if not provided)
+        #[arg(long, short)]
+        message: Option<String>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -746,6 +757,24 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+            MrCommands::Comment { iid, message, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let body = match message {
+                    Some(m) => m,
+                    None => {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        std::io::stdin().read_to_string(&mut buf)?;
+                        buf
+                    }
+                };
+                if body.trim().is_empty() {
+                    bail!("Comment body is empty");
+                }
+                let result = client.create_mr_note(iid, &body).await?;
+                let note_id = result["id"].as_u64().unwrap_or(0);
+                println!("Comment #{} added to !{}", note_id, iid);
             }
             MrCommands::Create {
                 title,

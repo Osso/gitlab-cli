@@ -261,6 +261,18 @@ impl Client {
         .await
     }
 
+    pub async fn create_mr_note(&self, iid: u64, body: &str) -> Result<Value> {
+        self.post(
+            &format!(
+                "/projects/{}/merge_requests/{}/notes",
+                self.encoded_project(),
+                iid
+            ),
+            &serde_json::json!({ "body": body }),
+        )
+        .await
+    }
+
     pub async fn get_issue(&self, iid: u64) -> Result<Value> {
         self.get(&format!(
             "/projects/{}/issues/{}",
