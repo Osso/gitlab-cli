@@ -38,12 +38,26 @@ impl Config {
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
-        if !path.exists() {
-            return Ok(Self::default());
+        let mut config = if path.exists() {
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read config from {:?}", path))?;
+            serde_json::from_str(&content).context("Failed to parse config")?
+        } else {
+            Self::default()
+        };
+
+        // Environment variables override config file
+        if let Ok(token) = std::env::var("GITLAB_TOKEN") {
+            config.token = Some(token);
         }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config from {:?}", path))?;
-        serde_json::from_str(&content).context("Failed to parse config")
+        if let Ok(host) = std::env::var("GITLAB_HOST") {
+            config.host = Some(host);
+        }
+        if let Ok(project) = std::env::var("GITLAB_PROJECT") {
+            config.project = Some(project);
+        }
+
+        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
