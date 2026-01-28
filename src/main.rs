@@ -225,6 +225,38 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Post an inline comment on a specific line in a merge request diff
+    CommentInline {
+        /// Merge request IID
+        iid: u64,
+        /// File path (new_path in the diff)
+        #[arg(long)]
+        file: String,
+        /// Line number on the new side of the diff
+        #[arg(long)]
+        line: Option<u32>,
+        /// Line number on the old side of the diff
+        #[arg(long)]
+        old_line: Option<u32>,
+        /// Base commit SHA
+        #[arg(long)]
+        base_sha: String,
+        /// Head commit SHA
+        #[arg(long)]
+        head_sha: String,
+        /// Start commit SHA (merge base)
+        #[arg(long)]
+        start_sha: String,
+        /// Old file path (if renamed, defaults to --file)
+        #[arg(long)]
+        old_file: Option<String>,
+        /// Comment body (reads from stdin if not provided)
+        #[arg(long, short)]
+        message: Option<String>,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
     /// Reply to a discussion thread on a merge request
     Reply {
         /// Merge request IID
@@ -958,6 +990,59 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                }
+                MrCommands::CommentInline {
+                    iid,
+                    file,
+                    line,
+                    old_line,
+                    base_sha,
+                    head_sha,
+                    start_sha,
+                    old_file,
+                    message,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let body = match message {
+                        Some(m) => m,
+                        None => {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            std::io::stdin().read_to_string(&mut buf)?;
+                            buf
+                        }
+                    };
+                    if body.trim().is_empty() {
+                        bail!("Comment body is empty");
+                    }
+                    if line.is_none() && old_line.is_none() {
+                        bail!("Either --line or --old-line must be specified");
+                    }
+                    let old_path = old_file.as_deref().unwrap_or(&file);
+                    let mut position = serde_json::json!({
+                        "position_type": "text",
+                        "base_sha": base_sha,
+                        "head_sha": head_sha,
+                        "start_sha": start_sha,
+                        "new_path": file,
+                        "old_path": old_path,
+                    });
+                    if let Some(n) = line {
+                        position["new_line"] = serde_json::json!(n);
+                    }
+                    if let Some(n) = old_line {
+                        position["old_line"] = serde_json::json!(n);
+                    }
+                    let result = client.create_mr_discussion(iid, &body, &position).await?;
+                    let disc_id = result["id"].as_str().unwrap_or("?");
+                    println!(
+                        "Inline comment added to !{} at {}:{} (discussion {})",
+                        iid,
+                        file,
+                        line.or(old_line).unwrap_or(0),
+                        disc_id
+                    );
                 }
                 MrCommands::Reply {
                     iid,

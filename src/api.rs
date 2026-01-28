@@ -321,6 +321,26 @@ impl Client {
         .await
     }
 
+    pub async fn create_mr_discussion(
+        &self,
+        iid: u64,
+        body: &str,
+        position: &Value,
+    ) -> Result<Value> {
+        self.post(
+            &format!(
+                "/projects/{}/merge_requests/{}/discussions",
+                self.encoded_project(),
+                iid
+            ),
+            &serde_json::json!({
+                "body": body,
+                "position": position
+            }),
+        )
+        .await
+    }
+
     pub async fn reply_to_discussion(
         &self,
         iid: u64,
