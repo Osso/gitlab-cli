@@ -173,6 +173,14 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Close a merge request
+    Close {
+        /// Merge request IID
+        iid: u64,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
     /// List comments on a merge request
     Comments {
         /// Merge request IID
@@ -768,6 +776,14 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+            MrCommands::Close { iid, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let result = client
+                    .update_merge_request(iid, &serde_json::json!({"state_event": "close"}))
+                    .await?;
+                let title = result["title"].as_str().unwrap_or("");
+                println!("Closed !{}: {}", iid, title);
             }
             MrCommands::Comments { iid, per_page, project } => {
                 let client = get_client(&mut config, project.as_deref()).await?;

@@ -243,6 +243,18 @@ impl Client {
         .await
     }
 
+    pub async fn update_merge_request(&self, iid: u64, params: &Value) -> Result<Value> {
+        self.put(
+            &format!(
+                "/projects/{}/merge_requests/{}",
+                self.encoded_project(),
+                iid
+            ),
+            params,
+        )
+        .await
+    }
+
     pub async fn get_merge_request_changes(&self, iid: u64) -> Result<Value> {
         self.get(&format!(
             "/projects/{}/merge_requests/{}/changes",
