@@ -261,6 +261,16 @@ impl Client {
         .await
     }
 
+    pub async fn list_mr_notes(&self, iid: u64, per_page: u32) -> Result<Value> {
+        self.get(&format!(
+            "/projects/{}/merge_requests/{}/notes?sort=desc&per_page={}",
+            self.encoded_project(),
+            iid,
+            per_page
+        ))
+        .await
+    }
+
     pub async fn create_mr_note(&self, iid: u64, body: &str) -> Result<Value> {
         self.post(
             &format!(

@@ -173,6 +173,17 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// List comments on a merge request
+    Comments {
+        /// Merge request IID
+        iid: u64,
+        /// Number of comments to show
+        #[arg(long, short = 'n', default_value = "10")]
+        per_page: u32,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
     /// Add a comment to a merge request
     Comment {
         /// Merge request IID
@@ -754,6 +765,29 @@ async fn main() -> Result<()> {
                             println!("--- a/{}", old_path);
                             println!("+++ b/{}", new_path);
                             print!("{}", diff);
+                        }
+                    }
+                }
+            }
+            MrCommands::Comments { iid, per_page, project } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+                let notes = client.list_mr_notes(iid, per_page).await?;
+                if let Some(arr) = notes.as_array() {
+                    if arr.is_empty() {
+                        println!("No comments on !{}", iid);
+                    } else {
+                        for note in arr {
+                            let system = note["system"].as_bool().unwrap_or(false);
+                            if system {
+                                continue;
+                            }
+                            let id = note["id"].as_u64().unwrap_or(0);
+                            let author = note["author"]["username"].as_str().unwrap_or("?");
+                            let created = note["created_at"].as_str().unwrap_or("?");
+                            let body = note["body"].as_str().unwrap_or("");
+                            println!("--- #{} by @{} ({})", id, author, created);
+                            println!("{}", body);
+                            println!();
                         }
                     }
                 }
