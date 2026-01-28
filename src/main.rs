@@ -723,323 +723,342 @@ async fn main() -> Result<()> {
             }
         },
 
-        Commands::Mr { command } => match command {
-            MrCommands::List {
-                state,
-                author,
-                created_after,
-                created_before,
-                updated_after,
-                order_by,
-                sort,
-                per_page,
-                project,
-            } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let params = MrListParams {
-                    per_page,
+        Commands::Mr { command } => {
+            match command {
+                MrCommands::List {
                     state,
-                    author_username: author,
+                    author,
                     created_after,
                     created_before,
                     updated_after,
                     order_by,
                     sort,
-                };
-                let result = client.list_merge_requests(&params).await?;
-                print_mrs(&result);
-            }
-            MrCommands::Show { iid, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let result = client.get_merge_request(iid).await?;
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            }
-            MrCommands::Automerge {
-                iid,
-                keep_branch,
-                project,
-            } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let max_retries = 3;
-                let mut last_error = None;
-
-                for attempt in 0..max_retries {
-                    match client.set_automerge(iid, !keep_branch).await {
-                        Ok(result) => {
-                            let title = result["title"].as_str().unwrap_or("");
-                            println!("Auto-merge enabled for !{}: {}", iid, title);
-                            last_error = None;
-                            break;
-                        }
-                        Err(e) => {
-                            let err_str = e.to_string();
-                            if err_str.contains("405") && attempt < max_retries - 1 {
-                                eprintln!(
-                                    "Pipeline not ready, retrying in 10s... ({}/{})",
-                                    attempt + 1,
-                                    max_retries
-                                );
-                                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                                last_error = Some(e);
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    }
+                    per_page,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let params = MrListParams {
+                        per_page,
+                        state,
+                        author_username: author,
+                        created_after,
+                        created_before,
+                        updated_after,
+                        order_by,
+                        sort,
+                    };
+                    let result = client.list_merge_requests(&params).await?;
+                    print_mrs(&result);
                 }
-
-                if let Some(e) = last_error {
-                    return Err(e);
-                }
-            }
-            MrCommands::Diff { iid, json, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let result = client.get_merge_request_changes(iid).await?;
-
-                if json {
+                MrCommands::Show { iid, project } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let result = client.get_merge_request(iid).await?;
                     println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
-                    // Output as unified diff format
-                    if let Some(changes) = result["changes"].as_array() {
-                        for change in changes {
-                            let old_path = change["old_path"].as_str().unwrap_or("");
-                            let new_path = change["new_path"].as_str().unwrap_or("");
-                            let diff = change["diff"].as_str().unwrap_or("");
-
-                            println!("--- a/{}", old_path);
-                            println!("+++ b/{}", new_path);
-                            print!("{}", diff);
-                        }
-                    }
                 }
-            }
-            MrCommands::Close { iid, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let result = client
-                    .update_merge_request(iid, &serde_json::json!({"state_event": "close"}))
-                    .await?;
-                let title = result["title"].as_str().unwrap_or("");
-                println!("Closed !{}: {}", iid, title);
-            }
-            MrCommands::Comments { iid, per_page, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let notes = client.list_mr_notes(iid, per_page).await?;
-                if let Some(arr) = notes.as_array() {
-                    if arr.is_empty() {
-                        println!("No comments on !{}", iid);
-                    } else {
-                        for note in arr {
-                            let system = note["system"].as_bool().unwrap_or(false);
-                            if system {
-                                continue;
-                            }
-                            let id = note["id"].as_u64().unwrap_or(0);
-                            let author = note["author"]["username"].as_str().unwrap_or("?");
-                            let created = note["created_at"].as_str().unwrap_or("?");
-                            let body = note["body"].as_str().unwrap_or("");
-                            println!("--- #{} by @{} ({})", id, author, created);
-                            println!("{}", body);
-                            println!();
-                        }
-                    }
-                }
-            }
-            MrCommands::Comment { iid, message, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let body = match message {
-                    Some(m) => m,
-                    None => {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        std::io::stdin().read_to_string(&mut buf)?;
-                        buf
-                    }
-                };
-                if body.trim().is_empty() {
-                    bail!("Comment body is empty");
-                }
-                let result = client.create_mr_note(iid, &body).await?;
-                let note_id = result["id"].as_u64().unwrap_or(0);
-                println!("Comment #{} added to !{}", note_id, iid);
-            }
-            MrCommands::Approve { iid, project } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                client.approve_merge_request(iid).await?;
-                println!("Approved !{}", iid);
-            }
-            MrCommands::Discussions {
-                iid,
-                unresolved,
-                per_page,
-                project,
-            } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let discussions = client.list_mr_discussions(iid, per_page).await?;
-                if let Some(arr) = discussions.as_array() {
-                    let threads: Vec<_> = arr
-                        .iter()
-                        .filter(|d| {
-                            // Skip individual notes (non-threaded)
-                            let notes = d["notes"].as_array();
-                            let is_thread = notes.map(|n| n.len() > 1).unwrap_or(false)
-                                || notes
-                                    .and_then(|n| n.first())
-                                    .and_then(|n| n["resolvable"].as_bool())
-                                    .unwrap_or(false);
-                            if !is_thread {
-                                return false;
-                            }
-                            if unresolved {
-                                // Keep only threads with at least one unresolved note
-                                notes
-                                    .map(|n| {
-                                        n.iter().any(|note| {
-                                            note["resolvable"].as_bool().unwrap_or(false)
-                                                && !note["resolved"].as_bool().unwrap_or(true)
-                                        })
-                                    })
-                                    .unwrap_or(false)
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
+                MrCommands::Automerge {
+                    iid,
+                    keep_branch,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let max_retries = 3;
+                    let mut last_error = None;
 
-                    if threads.is_empty() {
-                        let qualifier = if unresolved { "unresolved " } else { "" };
-                        println!("No {}discussion threads on !{}", qualifier, iid);
-                    } else {
-                        for d in &threads {
-                            let disc_id = d["id"].as_str().unwrap_or("?");
-                            let notes = d["notes"].as_array();
-                            let first = notes.and_then(|n| n.first());
-
-                            // File position info
-                            let position = first.and_then(|n| n["position"].as_object());
-                            if let Some(pos) = position {
-                                let path = pos
-                                    .get("new_path")
-                                    .or(pos.get("old_path"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("?");
-                                let line = pos
-                                    .get("new_line")
-                                    .or(pos.get("old_line"))
-                                    .and_then(|v| v.as_u64())
-                                    .map(|l| l.to_string())
-                                    .unwrap_or_default();
-                                println!("--- {} ({}:{})", disc_id, path, line);
-                            } else {
-                                println!("--- {}", disc_id);
+                    for attempt in 0..max_retries {
+                        match client.set_automerge(iid, !keep_branch).await {
+                            Ok(result) => {
+                                let title = result["title"].as_str().unwrap_or("");
+                                println!("Auto-merge enabled for !{}: {}", iid, title);
+                                last_error = None;
+                                break;
                             }
-
-                            let resolved = first
-                                .and_then(|n| n["resolved"].as_bool())
-                                .unwrap_or(false);
-                            println!("  resolved: {}", resolved);
-
-                            if let Some(notes_arr) = notes {
-                                for note in notes_arr {
-                                    let author =
-                                        note["author"]["username"].as_str().unwrap_or("?");
-                                    let body = note["body"].as_str().unwrap_or("");
-                                    println!("  @{}: {}", author, body);
+                            Err(e) => {
+                                let err_str = e.to_string();
+                                if err_str.contains("405") && attempt < max_retries - 1 {
+                                    eprintln!(
+                                        "Pipeline not ready, retrying in 10s... ({}/{})",
+                                        attempt + 1,
+                                        max_retries
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                    last_error = Some(e);
+                                } else {
+                                    return Err(e);
                                 }
                             }
-                            println!();
+                        }
+                    }
+
+                    if let Some(e) = last_error {
+                        return Err(e);
+                    }
+                }
+                MrCommands::Diff { iid, json, project } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let result = client.get_merge_request_changes(iid).await?;
+
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        // Output as unified diff format
+                        if let Some(changes) = result["changes"].as_array() {
+                            for change in changes {
+                                let old_path = change["old_path"].as_str().unwrap_or("");
+                                let new_path = change["new_path"].as_str().unwrap_or("");
+                                let diff = change["diff"].as_str().unwrap_or("");
+
+                                println!("--- a/{}", old_path);
+                                println!("+++ b/{}", new_path);
+                                print!("{}", diff);
+                            }
+                        }
+                    }
+                }
+                MrCommands::Close { iid, project } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let result = client
+                        .update_merge_request(iid, &serde_json::json!({"state_event": "close"}))
+                        .await?;
+                    let title = result["title"].as_str().unwrap_or("");
+                    println!("Closed !{}: {}", iid, title);
+                }
+                MrCommands::Comments {
+                    iid,
+                    per_page,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let notes = client.list_mr_notes(iid, per_page).await?;
+                    if let Some(arr) = notes.as_array() {
+                        if arr.is_empty() {
+                            println!("No comments on !{}", iid);
+                        } else {
+                            for note in arr {
+                                let system = note["system"].as_bool().unwrap_or(false);
+                                if system {
+                                    continue;
+                                }
+                                let id = note["id"].as_u64().unwrap_or(0);
+                                let author = note["author"]["username"].as_str().unwrap_or("?");
+                                let created = note["created_at"].as_str().unwrap_or("?");
+                                let body = note["body"].as_str().unwrap_or("");
+                                println!("--- #{} by @{} ({})", id, author, created);
+                                println!("{}", body);
+                                println!();
+                            }
+                        }
+                    }
+                }
+                MrCommands::Comment {
+                    iid,
+                    message,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let body = match message {
+                        Some(m) => m,
+                        None => {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            std::io::stdin().read_to_string(&mut buf)?;
+                            buf
+                        }
+                    };
+                    if body.trim().is_empty() {
+                        bail!("Comment body is empty");
+                    }
+                    let result = client.create_mr_note(iid, &body).await?;
+                    let note_id = result["id"].as_u64().unwrap_or(0);
+                    println!("Comment #{} added to !{}", note_id, iid);
+                }
+                MrCommands::Approve { iid, project } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    client.approve_merge_request(iid).await?;
+                    println!("Approved !{}", iid);
+                }
+                MrCommands::Discussions {
+                    iid,
+                    unresolved,
+                    per_page,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let discussions = client.list_mr_discussions(iid, per_page).await?;
+                    if let Some(arr) = discussions.as_array() {
+                        let threads: Vec<_> = arr
+                            .iter()
+                            .filter(|d| {
+                                // Skip individual notes (non-threaded)
+                                let notes = d["notes"].as_array();
+                                let is_thread = notes.map(|n| n.len() > 1).unwrap_or(false)
+                                    || notes
+                                        .and_then(|n| n.first())
+                                        .and_then(|n| n["resolvable"].as_bool())
+                                        .unwrap_or(false);
+                                if !is_thread {
+                                    return false;
+                                }
+                                if unresolved {
+                                    // Keep only threads with at least one unresolved note
+                                    notes
+                                        .map(|n| {
+                                            n.iter().any(|note| {
+                                                note["resolvable"].as_bool().unwrap_or(false)
+                                                    && !note["resolved"].as_bool().unwrap_or(true)
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect();
+
+                        if threads.is_empty() {
+                            let qualifier = if unresolved { "unresolved " } else { "" };
+                            println!("No {}discussion threads on !{}", qualifier, iid);
+                        } else {
+                            for d in &threads {
+                                let disc_id = d["id"].as_str().unwrap_or("?");
+                                let notes = d["notes"].as_array();
+                                let first = notes.and_then(|n| n.first());
+
+                                // File position info
+                                let position = first.and_then(|n| n["position"].as_object());
+                                if let Some(pos) = position {
+                                    let path = pos
+                                        .get("new_path")
+                                        .or(pos.get("old_path"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let line = pos
+                                        .get("new_line")
+                                        .or(pos.get("old_line"))
+                                        .and_then(|v| v.as_u64())
+                                        .map(|l| l.to_string())
+                                        .unwrap_or_default();
+                                    println!("--- {} ({}:{})", disc_id, path, line);
+                                } else {
+                                    println!("--- {}", disc_id);
+                                }
+
+                                let resolved =
+                                    first.and_then(|n| n["resolved"].as_bool()).unwrap_or(false);
+                                println!("  resolved: {}", resolved);
+
+                                if let Some(notes_arr) = notes {
+                                    for note in notes_arr {
+                                        let author =
+                                            note["author"]["username"].as_str().unwrap_or("?");
+                                        let body = note["body"].as_str().unwrap_or("");
+                                        println!("  @{}: {}", author, body);
+                                    }
+                                }
+                                println!();
+                            }
+                        }
+                    }
+                }
+                MrCommands::Reply {
+                    iid,
+                    discussion,
+                    message,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let body = match message {
+                        Some(m) => m,
+                        None => {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            std::io::stdin().read_to_string(&mut buf)?;
+                            buf
+                        }
+                    };
+                    if body.trim().is_empty() {
+                        bail!("Reply body is empty");
+                    }
+                    let result = client.reply_to_discussion(iid, &discussion, &body).await?;
+                    let note_id = result["id"].as_u64().unwrap_or(0);
+                    println!(
+                        "Reply #{} added to discussion {} on !{}",
+                        note_id, discussion, iid
+                    );
+                }
+                MrCommands::Create {
+                    title,
+                    description,
+                    source,
+                    target,
+                    auto_merge,
+                    keep_branch,
+                    project,
+                } => {
+                    // Get source branch from git if not provided
+                    let source_branch = if let Some(s) = source {
+                        s
+                    } else {
+                        let output = std::process::Command::new("git")
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .output()
+                            .context("Failed to get current git branch")?;
+                        if !output.status.success() {
+                            bail!("Failed to get current git branch");
+                        }
+                        String::from_utf8(output.stdout)?.trim().to_string()
+                    };
+
+                    let client = get_client(&mut config, project.as_deref()).await?;
+
+                    // Get target branch from project default if not provided
+                    let target_branch = if let Some(t) = target {
+                        t
+                    } else {
+                        let project_info = client.get_project().await?;
+                        project_info["default_branch"]
+                            .as_str()
+                            .unwrap_or("main")
+                            .to_string()
+                    };
+
+                    let result = client
+                        .create_merge_request(
+                            &title,
+                            &source_branch,
+                            &target_branch,
+                            description.as_deref(),
+                        )
+                        .await?;
+
+                    let iid = result["iid"].as_u64().unwrap_or(0);
+                    let web_url = result["web_url"].as_str().unwrap_or("");
+
+                    println!("Created !{}: {}", iid, title);
+                    println!("{}", web_url);
+
+                    if auto_merge {
+                        // Wait briefly for pipeline to start
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                        match client.set_automerge(iid, !keep_branch).await {
+                            Ok(_) => println!("Auto-merge enabled"),
+                            Err(e) => {
+                                eprintln!("Warning: Could not enable auto-merge: {}", e);
+                                eprintln!("Pipeline may not have started yet. Run: gitlab mr automerge {}", iid);
+                            }
                         }
                     }
                 }
             }
-            MrCommands::Reply {
-                iid,
-                discussion,
-                message,
-                project,
-            } => {
-                let client = get_client(&mut config, project.as_deref()).await?;
-                let body = match message {
-                    Some(m) => m,
-                    None => {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        std::io::stdin().read_to_string(&mut buf)?;
-                        buf
-                    }
-                };
-                if body.trim().is_empty() {
-                    bail!("Reply body is empty");
-                }
-                let result = client.reply_to_discussion(iid, &discussion, &body).await?;
-                let note_id = result["id"].as_u64().unwrap_or(0);
-                println!(
-                    "Reply #{} added to discussion {} on !{}",
-                    note_id, discussion, iid
-                );
-            }
-            MrCommands::Create {
-                title,
-                description,
-                source,
-                target,
-                auto_merge,
-                keep_branch,
-                project,
-            } => {
-                // Get source branch from git if not provided
-                let source_branch = if let Some(s) = source {
-                    s
-                } else {
-                    let output = std::process::Command::new("git")
-                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                        .output()
-                        .context("Failed to get current git branch")?;
-                    if !output.status.success() {
-                        bail!("Failed to get current git branch");
-                    }
-                    String::from_utf8(output.stdout)?.trim().to_string()
-                };
-
-                let client = get_client(&mut config, project.as_deref()).await?;
-
-                // Get target branch from project default if not provided
-                let target_branch = if let Some(t) = target {
-                    t
-                } else {
-                    let project_info = client.get_project().await?;
-                    project_info["default_branch"]
-                        .as_str()
-                        .unwrap_or("main")
-                        .to_string()
-                };
-
-                let result = client
-                    .create_merge_request(&title, &source_branch, &target_branch, description.as_deref())
-                    .await?;
-
-                let iid = result["iid"].as_u64().unwrap_or(0);
-                let web_url = result["web_url"].as_str().unwrap_or("");
-
-                println!("Created !{}: {}", iid, title);
-                println!("{}", web_url);
-
-                if auto_merge {
-                    // Wait briefly for pipeline to start
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                    match client.set_automerge(iid, !keep_branch).await {
-                        Ok(_) => println!("Auto-merge enabled"),
-                        Err(e) => {
-                            eprintln!("Warning: Could not enable auto-merge: {}", e);
-                            eprintln!("Pipeline may not have started yet. Run: gitlab mr automerge {}", iid);
-                        }
-                    }
-                }
-            }
-        },
+        }
 
         Commands::Ci { command } => match command {
-            CiCommands::Status { id, branch, mr, project } => {
+            CiCommands::Status {
+                id,
+                branch,
+                mr,
+                project,
+            } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
                 let pipeline = if let Some(pid) = id {
                     client.get_pipeline(pid).await?
@@ -1053,7 +1072,9 @@ async fn main() -> Result<()> {
                     }
                     arr[0].clone()
                 } else {
-                    let pipelines = client.list_pipelines_for_branch(branch.as_deref(), 1).await?;
+                    let pipelines = client
+                        .list_pipelines_for_branch(branch.as_deref(), 1)
+                        .await?;
                     let arr = pipelines
                         .as_array()
                         .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
@@ -1085,14 +1106,21 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            CiCommands::Wait { id, branch, interval, project } => {
+            CiCommands::Wait {
+                id,
+                branch,
+                interval,
+                project,
+            } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
 
                 loop {
                     let pipeline = if let Some(pid) = id {
                         client.get_pipeline(pid).await?
                     } else {
-                        let pipelines = client.list_pipelines_for_branch(branch.as_deref(), 1).await?;
+                        let pipelines = client
+                            .list_pipelines_for_branch(branch.as_deref(), 1)
+                            .await?;
                         let arr = pipelines
                             .as_array()
                             .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
@@ -1107,10 +1135,7 @@ async fn main() -> Result<()> {
                     let pipeline_id = pipeline["id"].as_u64().unwrap();
 
                     // Print current status
-                    eprintln!(
-                        "Pipeline #{} - {} ({})",
-                        pipeline_id, status, pipeline_ref
-                    );
+                    eprintln!("Pipeline #{} - {} ({})", pipeline_id, status, pipeline_ref);
 
                     // Check if pipeline is finished
                     match status {
@@ -1121,7 +1146,12 @@ async fn main() -> Result<()> {
                         "failed" | "canceled" | "skipped" => {
                             bail!("Pipeline #{} {}", pipeline_id, status);
                         }
-                        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => {
+                        "running"
+                        | "pending"
+                        | "created"
+                        | "waiting_for_resource"
+                        | "preparing"
+                        | "scheduled" => {
                             // Still running, wait and check again
                             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                         }
@@ -1214,7 +1244,12 @@ async fn main() -> Result<()> {
             } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
                 let result = client
-                    .create_issue(&title, description.as_deref(), labels.as_deref(), assignee.as_deref())
+                    .create_issue(
+                        &title,
+                        description.as_deref(),
+                        labels.as_deref(),
+                        assignee.as_deref(),
+                    )
                     .await?;
                 let iid = result["iid"].as_u64().unwrap_or(0);
                 let web_url = result["web_url"].as_str().unwrap_or("");
@@ -1224,7 +1259,11 @@ async fn main() -> Result<()> {
         },
 
         Commands::Group { command } => match command {
-            GroupCommands::Members { group, per_page, email } => {
+            GroupCommands::Members {
+                group,
+                per_page,
+                email,
+            } => {
                 let client = get_group_client(&mut config).await?;
                 let result = client.list_group_members(&group, per_page, email).await?;
                 print_group_members(&result, email);
@@ -1254,9 +1293,15 @@ async fn main() -> Result<()> {
                 let name = result["path_with_namespace"].as_str().unwrap_or(&project);
                 println!("Unarchived: {}", name);
             }
-            ProjectCommands::List { group, archived, per_page } => {
+            ProjectCommands::List {
+                group,
+                archived,
+                per_page,
+            } => {
                 let client = get_group_client(&mut config).await?;
-                let result = client.list_group_projects(&group, per_page, archived).await?;
+                let result = client
+                    .list_group_projects(&group, per_page, archived)
+                    .await?;
                 print_projects(&result);
             }
             ProjectCommands::Mirrors { command } => match command {
@@ -1265,9 +1310,15 @@ async fn main() -> Result<()> {
                     let result = client.list_push_mirrors(&project).await?;
                     print_mirrors(&result);
                 }
-                MirrorCommands::Create { project, url, only_protected } => {
+                MirrorCommands::Create {
+                    project,
+                    url,
+                    only_protected,
+                } => {
                     let client = get_group_client(&mut config).await?;
-                    let result = client.create_push_mirror(&project, &url, true, only_protected).await?;
+                    let result = client
+                        .create_push_mirror(&project, &url, true, only_protected)
+                        .await?;
                     let id = result["id"].as_u64().unwrap_or(0);
                     let mirror_url = result["url"].as_str().unwrap_or(&url);
                     println!("Created push mirror (id: {}) -> {}", id, mirror_url);
@@ -1281,12 +1332,25 @@ async fn main() -> Result<()> {
                     }
 
                     // Note about host keys
-                    println!("\nNOTE: Go to GitLab UI and click 'Detect host keys' to complete setup:");
-                    println!("https://gitlab.com/{}/-/settings/repository#js-push-remote-settings", project);
+                    println!(
+                        "\nNOTE: Go to GitLab UI and click 'Detect host keys' to complete setup:"
+                    );
+                    println!(
+                        "https://gitlab.com/{}/-/settings/repository#js-push-remote-settings",
+                        project
+                    );
                 }
-                MirrorCommands::CreateHttps { project, url, user, password, only_protected } => {
+                MirrorCommands::CreateHttps {
+                    project,
+                    url,
+                    user,
+                    password,
+                    only_protected,
+                } => {
                     let client = get_group_client(&mut config).await?;
-                    let result = client.create_push_mirror_https(&project, &url, &user, &password, only_protected).await?;
+                    let result = client
+                        .create_push_mirror_https(&project, &url, &user, &password, only_protected)
+                        .await?;
                     let id = result["id"].as_u64().unwrap_or(0);
                     let mirror_url = result["url"].as_str().unwrap_or(&url);
                     println!("Created HTTPS push mirror (id: {}) -> {}", id, mirror_url);
@@ -1301,7 +1365,7 @@ async fn main() -> Result<()> {
                     client.sync_push_mirror(&project, mirror_id).await?;
                     println!("Triggered sync for mirror {}", mirror_id);
                 }
-            }
+            },
         },
 
         Commands::Webhook { command } => match command {
@@ -1399,7 +1463,11 @@ async fn main() -> Result<()> {
                 let result = client.list_protected_branches().await?;
                 print_protected_branches(&result);
             }
-            BranchCommands::Protect { branch, allow_force_push, project } => {
+            BranchCommands::Protect {
+                branch,
+                allow_force_push,
+                project,
+            } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
                 client.protect_branch(&branch, allow_force_push).await?;
                 println!("Protected branch: {}", branch);
@@ -1512,7 +1580,10 @@ fn print_projects(value: &serde_json::Value) {
             let archived = project["archived"].as_bool().unwrap_or(false);
             let default_branch = project["default_branch"].as_str().unwrap_or("-");
             let status = if archived { "[archived]" } else { "" };
-            println!("{:<45} {:<10} {:<10} {}", path, visibility, default_branch, status);
+            println!(
+                "{:<45} {:<10} {:<10} {}",
+                path, visibility, default_branch, status
+            );
         }
     }
 }
@@ -1533,7 +1604,11 @@ fn print_mirrors(value: &serde_json::Value) {
             let last_error = mirror["last_error"].as_str();
 
             let status = if enabled { "enabled" } else { "disabled" };
-            let protected = if only_protected { "[protected-only]" } else { "[all-branches]" };
+            let protected = if only_protected {
+                "[protected-only]"
+            } else {
+                "[all-branches]"
+            };
 
             println!("{:<6} {:<10} {} {}", id, status, protected, url);
             println!("       Auth: {}", auth_method);
@@ -1610,7 +1685,11 @@ fn print_protected_branches(value: &serde_json::Value) {
         for branch in branches {
             let name = branch["name"].as_str().unwrap_or("");
             let allow_force_push = branch["allow_force_push"].as_bool().unwrap_or(false);
-            let force_push_str = if allow_force_push { "[force-push-allowed]" } else { "" };
+            let force_push_str = if allow_force_push {
+                "[force-push-allowed]"
+            } else {
+                ""
+            };
             println!("{} {}", name, force_push_str);
         }
     }

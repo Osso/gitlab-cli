@@ -120,7 +120,11 @@ impl Client {
         self.list_pipelines_for_branch(None, per_page).await
     }
 
-    pub async fn list_pipelines_for_branch(&self, branch: Option<&str>, per_page: u32) -> Result<Value> {
+    pub async fn list_pipelines_for_branch(
+        &self,
+        branch: Option<&str>,
+        per_page: u32,
+    ) -> Result<Value> {
         let mut url = format!(
             "/projects/{}/pipelines?per_page={}",
             self.encoded_project(),
@@ -222,7 +226,10 @@ impl Client {
             query_parts.push(format!("author_username={}", urlencoding::encode(author)));
         }
         if let Some(assignee) = &params.assignee_username {
-            query_parts.push(format!("assignee_username={}", urlencoding::encode(assignee)));
+            query_parts.push(format!(
+                "assignee_username={}",
+                urlencoding::encode(assignee)
+            ));
         }
         if let Some(labels) = &params.labels {
             query_parts.push(format!("labels={}", urlencoding::encode(labels)));
@@ -379,7 +386,13 @@ impl Client {
         Ok(())
     }
 
-    pub async fn create_issue(&self, title: &str, description: Option<&str>, labels: Option<&str>, assignee: Option<&str>) -> Result<Value> {
+    pub async fn create_issue(
+        &self,
+        title: &str,
+        description: Option<&str>,
+        labels: Option<&str>,
+        assignee: Option<&str>,
+    ) -> Result<Value> {
         let mut body = serde_json::json!({
             "title": title
         });
@@ -402,19 +415,36 @@ impl Client {
     }
 
     // Group operations (don't require project)
-    pub async fn list_group_members(&self, group: &str, per_page: u32, show_email: bool) -> Result<Value> {
+    pub async fn list_group_members(
+        &self,
+        group: &str,
+        per_page: u32,
+        show_email: bool,
+    ) -> Result<Value> {
         let encoded_group = urlencoding::encode(group);
         if show_email {
             // Use billable_members endpoint which includes emails for group owners
-            self.get(&format!("/groups/{}/billable_members?per_page={}", encoded_group, per_page)).await
+            self.get(&format!(
+                "/groups/{}/billable_members?per_page={}",
+                encoded_group, per_page
+            ))
+            .await
         } else {
-            self.get(&format!("/groups/{}/members?per_page={}", encoded_group, per_page)).await
+            self.get(&format!(
+                "/groups/{}/members?per_page={}",
+                encoded_group, per_page
+            ))
+            .await
         }
     }
 
     pub async fn list_group_subgroups(&self, group: &str, per_page: u32) -> Result<Value> {
         let encoded_group = urlencoding::encode(group);
-        self.get(&format!("/groups/{}/subgroups?per_page={}", encoded_group, per_page)).await
+        self.get(&format!(
+            "/groups/{}/subgroups?per_page={}",
+            encoded_group, per_page
+        ))
+        .await
     }
 
     pub async fn get_group(&self, group: &str) -> Result<Value> {
@@ -425,18 +455,39 @@ impl Client {
     // Project operations
     pub async fn archive_project(&self, project: &str) -> Result<Value> {
         let encoded_project = urlencoding::encode(project);
-        self.post(&format!("/projects/{}/archive", encoded_project), &serde_json::json!({})).await
+        self.post(
+            &format!("/projects/{}/archive", encoded_project),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     pub async fn unarchive_project(&self, project: &str) -> Result<Value> {
         let encoded_project = urlencoding::encode(project);
-        self.post(&format!("/projects/{}/unarchive", encoded_project), &serde_json::json!({})).await
+        self.post(
+            &format!("/projects/{}/unarchive", encoded_project),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
-    pub async fn list_group_projects(&self, group: &str, per_page: u32, include_archived: bool) -> Result<Value> {
+    pub async fn list_group_projects(
+        &self,
+        group: &str,
+        per_page: u32,
+        include_archived: bool,
+    ) -> Result<Value> {
         let encoded_group = urlencoding::encode(group);
-        let archived_param = if include_archived { "&archived=true" } else { "" };
-        self.get(&format!("/groups/{}/projects?per_page={}{}", encoded_group, per_page, archived_param)).await
+        let archived_param = if include_archived {
+            "&archived=true"
+        } else {
+            ""
+        };
+        self.get(&format!(
+            "/groups/{}/projects?per_page={}{}",
+            encoded_group, per_page, archived_param
+        ))
+        .await
     }
 
     // Push mirror operations
@@ -464,8 +515,9 @@ impl Client {
                 "enabled": enabled,
                 "only_protected_branches": only_protected,
                 "auth_method": "ssh_public_key"
-            })
-        ).await
+            }),
+        )
+        .await
     }
 
     pub async fn create_push_mirror_https(
@@ -495,34 +547,57 @@ impl Client {
                 "enabled": true,
                 "only_protected_branches": only_protected,
                 "auth_method": "password"
-            })
-        ).await
+            }),
+        )
+        .await
     }
 
     pub async fn get_push_mirror(&self, project: &str, mirror_id: u64) -> Result<Value> {
         let encoded_project = urlencoding::encode(project);
-        self.get(&format!("/projects/{}/remote_mirrors/{}", encoded_project, mirror_id)).await
+        self.get(&format!(
+            "/projects/{}/remote_mirrors/{}",
+            encoded_project, mirror_id
+        ))
+        .await
     }
 
-    pub async fn get_push_mirror_public_key(&self, project: &str, mirror_id: u64) -> Result<String> {
+    pub async fn get_push_mirror_public_key(
+        &self,
+        project: &str,
+        mirror_id: u64,
+    ) -> Result<String> {
         let encoded_project = urlencoding::encode(project);
-        let result = self.get(&format!("/projects/{}/remote_mirrors/{}/public_key", encoded_project, mirror_id)).await?;
+        let result = self
+            .get(&format!(
+                "/projects/{}/remote_mirrors/{}/public_key",
+                encoded_project, mirror_id
+            ))
+            .await?;
         Ok(result["public_key"].as_str().unwrap_or("").to_string())
     }
 
     pub async fn list_push_mirrors(&self, project: &str) -> Result<Value> {
         let encoded_project = urlencoding::encode(project);
-        self.get(&format!("/projects/{}/remote_mirrors", encoded_project)).await
+        self.get(&format!("/projects/{}/remote_mirrors", encoded_project))
+            .await
     }
 
     pub async fn delete_push_mirror(&self, project: &str, mirror_id: u64) -> Result<()> {
         let encoded_project = urlencoding::encode(project);
-        self.delete(&format!("/projects/{}/remote_mirrors/{}", encoded_project, mirror_id)).await
+        self.delete(&format!(
+            "/projects/{}/remote_mirrors/{}",
+            encoded_project, mirror_id
+        ))
+        .await
     }
 
     pub async fn sync_push_mirror(&self, project: &str, mirror_id: u64) -> Result<()> {
         let encoded_project = urlencoding::encode(project);
-        self.post_empty(&format!("/projects/{}/remote_mirrors/{}/sync", encoded_project, mirror_id)).await
+        self.post_empty(&format!(
+            "/projects/{}/remote_mirrors/{}/sync",
+            encoded_project, mirror_id
+        ))
+        .await
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
@@ -544,8 +619,11 @@ impl Client {
 
     // Protected branch operations
     pub async fn list_protected_branches(&self) -> Result<Value> {
-        self.get(&format!("/projects/{}/protected_branches", self.encoded_project()))
-            .await
+        self.get(&format!(
+            "/projects/{}/protected_branches",
+            self.encoded_project()
+        ))
+        .await
     }
 
     pub async fn protect_branch(&self, branch: &str, allow_force_push: bool) -> Result<Value> {
@@ -609,7 +687,11 @@ impl Client {
         .await
     }
 
-    pub async fn update_webhook(&self, hook_id: u64, params: &WebhookUpdateParams) -> Result<Value> {
+    pub async fn update_webhook(
+        &self,
+        hook_id: u64,
+        params: &WebhookUpdateParams,
+    ) -> Result<Value> {
         let mut body = serde_json::json!({});
 
         if let Some(url) = &params.url {
