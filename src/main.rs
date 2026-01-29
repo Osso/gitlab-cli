@@ -316,6 +316,17 @@ enum CiCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Retry a failed job or pipeline
+    Retry {
+        /// Job ID or pipeline ID to retry
+        id: u64,
+        /// Retry entire pipeline instead of a single job
+        #[arg(long)]
+        pipeline: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1288,6 +1299,32 @@ async fn main() -> Result<()> {
 
                 let log = client.get_job_log(job_id).await?;
                 println!("{}", log);
+            }
+            CiCommands::Retry {
+                id,
+                pipeline,
+                project,
+            } => {
+                let client = get_client(&mut config, project.as_deref()).await?;
+
+                if pipeline {
+                    let result = client.retry_pipeline(id).await?;
+                    let new_pipeline_id = result["id"].as_u64().unwrap_or(id);
+                    let web_url = result["web_url"].as_str().unwrap_or("");
+                    println!("Pipeline #{} retried", new_pipeline_id);
+                    if !web_url.is_empty() {
+                        println!("{}", web_url);
+                    }
+                } else {
+                    let result = client.retry_job(id).await?;
+                    let job_name = result["name"].as_str().unwrap_or("unknown");
+                    let job_id = result["id"].as_u64().unwrap_or(id);
+                    let web_url = result["web_url"].as_str().unwrap_or("");
+                    println!("Job '{}' (#{}) retried", job_name, job_id);
+                    if !web_url.is_empty() {
+                        println!("{}", web_url);
+                    }
+                }
             }
         },
 

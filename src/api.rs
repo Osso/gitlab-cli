@@ -172,6 +172,26 @@ impl Client {
         Ok(body)
     }
 
+    pub async fn retry_job(&self, job_id: u64) -> Result<Value> {
+        self.post(
+            &format!("/projects/{}/jobs/{}/retry", self.encoded_project(), job_id),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn retry_pipeline(&self, pipeline_id: u64) -> Result<Value> {
+        self.post(
+            &format!(
+                "/projects/{}/pipelines/{}/retry",
+                self.encoded_project(),
+                pipeline_id
+            ),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     pub async fn set_automerge(&self, iid: u64, remove_source_branch: bool) -> Result<Value> {
         self.put(
             &format!(
