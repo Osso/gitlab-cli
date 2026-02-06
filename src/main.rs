@@ -70,6 +70,28 @@ enum Commands {
         #[command(subcommand)]
         command: WebhookCommands,
     },
+    /// Fetch a raw file from a repository
+    File {
+        /// File path in the repository (e.g., src/main.rs)
+        path: String,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+        /// Git ref (branch, tag, or commit SHA; defaults to project default branch)
+        #[arg(long, name = "ref")]
+        git_ref: Option<String>,
+    },
+    /// Make a raw GitLab API call
+    Api {
+        /// API endpoint (e.g., /projects or /api/v4/projects)
+        endpoint: String,
+        /// HTTP method
+        #[arg(long, short, default_value = "GET")]
+        method: String,
+        /// JSON request body
+        #[arg(long, short)]
+        data: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -271,6 +293,20 @@ enum MrCommands {
         #[arg(long, short)]
         project: Option<String>,
     },
+    /// Resolve or unresolve a discussion thread on a merge request
+    Resolve {
+        /// Merge request IID
+        iid: u64,
+        /// Discussion ID to resolve
+        #[arg(long, short)]
+        discussion: String,
+        /// Unresolve instead of resolve
+        #[arg(long, short)]
+        unresolve: bool,
+        /// Override default project
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,20 +345,26 @@ enum CiCommands {
     Logs {
         /// Job name or ID
         job: String,
-        /// Pipeline ID (defaults to latest)
+        /// Pipeline ID (defaults to latest for branch)
         #[arg(long)]
         pipeline: Option<u64>,
+        /// Branch name (defaults to current git branch)
+        #[arg(long, short)]
+        branch: Option<String>,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
     },
     /// Retry a failed job or pipeline
     Retry {
-        /// Job ID or pipeline ID to retry
-        id: u64,
+        /// Job name or ID (or pipeline ID with --pipeline)
+        job: String,
         /// Retry entire pipeline instead of a single job
         #[arg(long)]
         pipeline: bool,
+        /// Branch name (defaults to current git branch)
+        #[arg(long, short)]
+        branch: Option<String>,
         /// Override default project
         #[arg(long, short)]
         project: Option<String>,
@@ -1081,6 +1123,20 @@ async fn main() -> Result<()> {
                         note_id, discussion, iid
                     );
                 }
+                MrCommands::Resolve {
+                    iid,
+                    discussion,
+                    unresolve,
+                    project,
+                } => {
+                    let client = get_client(&mut config, project.as_deref()).await?;
+                    let resolved = !unresolve;
+                    client
+                        .resolve_discussion(iid, &discussion, resolved)
+                        .await?;
+                    let action = if resolved { "Resolved" } else { "Unresolved" };
+                    println!("{} discussion {} on !{}", action, discussion, iid);
+                }
                 MrCommands::Create {
                     title,
                     description,
@@ -1168,14 +1224,27 @@ async fn main() -> Result<()> {
                     }
                     arr[0].clone()
                 } else {
+                    // Get branch from argument or detect from git
+                    let ref_name = if let Some(b) = &branch {
+                        b.clone()
+                    } else {
+                        let output = std::process::Command::new("git")
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .output()
+                            .context("Failed to get current git branch")?;
+                        if !output.status.success() {
+                            bail!("Failed to get current git branch");
+                        }
+                        String::from_utf8(output.stdout)?.trim().to_string()
+                    };
                     let pipelines = client
-                        .list_pipelines_for_branch(branch.as_deref(), 1)
+                        .list_pipelines_for_branch(Some(&ref_name), 1)
                         .await?;
                     let arr = pipelines
                         .as_array()
-                        .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                        .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
                     if arr.is_empty() {
-                        bail!("No pipelines found");
+                        bail!("No pipelines found for branch {}", ref_name);
                     }
                     arr[0].clone()
                 };
@@ -1210,18 +1279,34 @@ async fn main() -> Result<()> {
             } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
 
+                // Get branch from argument or detect from git
+                let ref_name = if let Some(b) = &branch {
+                    Some(b.clone())
+                } else if id.is_none() {
+                    let output = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .output()
+                        .context("Failed to get current git branch")?;
+                    if !output.status.success() {
+                        bail!("Failed to get current git branch");
+                    }
+                    Some(String::from_utf8(output.stdout)?.trim().to_string())
+                } else {
+                    None
+                };
+
                 loop {
                     let pipeline = if let Some(pid) = id {
                         client.get_pipeline(pid).await?
                     } else {
                         let pipelines = client
-                            .list_pipelines_for_branch(branch.as_deref(), 1)
+                            .list_pipelines_for_branch(ref_name.as_deref(), 1)
                             .await?;
                         let arr = pipelines
                             .as_array()
-                            .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                            .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name.as_deref().unwrap_or("?")))?;
                         if arr.is_empty() {
-                            bail!("No pipelines found");
+                            bail!("No pipelines found for branch {}", ref_name.as_deref().unwrap_or("?"));
                         }
                         arr[0].clone()
                     };
@@ -1260,6 +1345,7 @@ async fn main() -> Result<()> {
             CiCommands::Logs {
                 job,
                 pipeline,
+                branch,
                 project,
             } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
@@ -1267,12 +1353,27 @@ async fn main() -> Result<()> {
                 let pipeline_id = if let Some(pid) = pipeline {
                     pid
                 } else {
-                    let pipelines = client.list_pipelines(1).await?;
+                    // Get branch name - use provided or detect from git
+                    let ref_name = if let Some(b) = branch {
+                        b
+                    } else {
+                        let output = std::process::Command::new("git")
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .output()
+                            .context("Failed to get current git branch")?;
+                        if !output.status.success() {
+                            bail!("Failed to get current git branch");
+                        }
+                        String::from_utf8(output.stdout)?.trim().to_string()
+                    };
+                    let pipelines = client
+                        .list_pipelines_for_branch(Some(&ref_name), 1)
+                        .await?;
                     let arr = pipelines
                         .as_array()
-                        .ok_or_else(|| anyhow::anyhow!("No pipelines found"))?;
+                        .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
                     if arr.is_empty() {
-                        bail!("No pipelines found");
+                        bail!("No pipelines found for branch {}", ref_name);
                     }
                     arr[0]["id"]
                         .as_u64()
@@ -1301,26 +1402,73 @@ async fn main() -> Result<()> {
                 println!("{}", log);
             }
             CiCommands::Retry {
-                id,
-                pipeline,
+                job,
+                pipeline: retry_pipeline,
+                branch,
                 project,
             } => {
                 let client = get_client(&mut config, project.as_deref()).await?;
 
-                if pipeline {
-                    let result = client.retry_pipeline(id).await?;
-                    let new_pipeline_id = result["id"].as_u64().unwrap_or(id);
+                if retry_pipeline {
+                    // For pipeline retry, job arg is the pipeline ID
+                    let pipeline_id: u64 = job.parse().context("Pipeline ID must be numeric")?;
+                    let result = client.retry_pipeline(pipeline_id).await?;
+                    let new_pipeline_id = result["id"].as_u64().unwrap_or(pipeline_id);
                     let web_url = result["web_url"].as_str().unwrap_or("");
                     println!("Pipeline #{} retried", new_pipeline_id);
                     if !web_url.is_empty() {
                         println!("{}", web_url);
                     }
                 } else {
-                    let result = client.retry_job(id).await?;
+                    // Resolve job name to ID if not numeric
+                    let job_id: u64 = if let Ok(id) = job.parse::<u64>() {
+                        id
+                    } else {
+                        // Get branch name - use provided or detect from git
+                        let ref_name = if let Some(b) = branch {
+                            b
+                        } else {
+                            let output = std::process::Command::new("git")
+                                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                                .output()
+                                .context("Failed to get current git branch")?;
+                            if !output.status.success() {
+                                bail!("Failed to get current git branch");
+                            }
+                            String::from_utf8(output.stdout)?.trim().to_string()
+                        };
+                        let pipelines = client
+                            .list_pipelines_for_branch(Some(&ref_name), 1)
+                            .await?;
+                        let arr = pipelines
+                            .as_array()
+                            .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
+                        if arr.is_empty() {
+                            bail!("No pipelines found for branch {}", ref_name);
+                        }
+                        let pipeline_id = arr[0]["id"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid pipeline ID"))?;
+
+                        let jobs = client.list_pipeline_jobs(pipeline_id).await?;
+                        let jobs_arr = jobs
+                            .as_array()
+                            .ok_or_else(|| anyhow::anyhow!("No jobs found"))?;
+
+                        jobs_arr
+                            .iter()
+                            .find(|j| j["name"].as_str() == Some(&job))
+                            .and_then(|j| j["id"].as_u64())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Job '{}' not found in pipeline {}", job, pipeline_id)
+                            })?
+                    };
+
+                    let result = client.retry_job(job_id).await?;
                     let job_name = result["name"].as_str().unwrap_or("unknown");
-                    let job_id = result["id"].as_u64().unwrap_or(id);
+                    let new_job_id = result["id"].as_u64().unwrap_or(job_id);
                     let web_url = result["web_url"].as_str().unwrap_or("");
-                    println!("Job '{}' (#{}) retried", job_name, job_id);
+                    println!("Job '{}' (#{}) retried", job_name, new_job_id);
                     if !web_url.is_empty() {
                         println!("{}", web_url);
                     }
@@ -1578,6 +1726,38 @@ async fn main() -> Result<()> {
                 println!("Sent test {} event to webhook {}", event, id);
             }
         },
+
+        Commands::File {
+            path,
+            project,
+            git_ref,
+        } => {
+            let client = get_client(&mut config, project.as_deref()).await?;
+            let ref_name = match git_ref {
+                Some(r) => r,
+                None => {
+                    let project_info = client.get_project().await?;
+                    project_info["default_branch"]
+                        .as_str()
+                        .unwrap_or("master")
+                        .to_string()
+                }
+            };
+            let content = client.get_raw_file(&path, &ref_name).await?;
+            print!("{}", content);
+        }
+
+        Commands::Api {
+            endpoint,
+            method,
+            data,
+        } => {
+            let client = get_group_client(&mut config).await?;
+            let body = client
+                .raw_request(&method, &endpoint, data.as_deref())
+                .await?;
+            println!("{}", body);
+        }
 
         Commands::Branch { command } => match command {
             BranchCommands::List { project } => {
