@@ -1237,12 +1237,10 @@ async fn main() -> Result<()> {
                         }
                         String::from_utf8(output.stdout)?.trim().to_string()
                     };
-                    let pipelines = client
-                        .list_pipelines_for_branch(Some(&ref_name), 1)
-                        .await?;
-                    let arr = pipelines
-                        .as_array()
-                        .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
+                    let pipelines = client.list_pipelines_for_branch(Some(&ref_name), 1).await?;
+                    let arr = pipelines.as_array().ok_or_else(|| {
+                        anyhow::anyhow!("No pipelines found for branch {}", ref_name)
+                    })?;
                     if arr.is_empty() {
                         bail!("No pipelines found for branch {}", ref_name);
                     }
@@ -1302,11 +1300,17 @@ async fn main() -> Result<()> {
                         let pipelines = client
                             .list_pipelines_for_branch(ref_name.as_deref(), 1)
                             .await?;
-                        let arr = pipelines
-                            .as_array()
-                            .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name.as_deref().unwrap_or("?")))?;
+                        let arr = pipelines.as_array().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "No pipelines found for branch {}",
+                                ref_name.as_deref().unwrap_or("?")
+                            )
+                        })?;
                         if arr.is_empty() {
-                            bail!("No pipelines found for branch {}", ref_name.as_deref().unwrap_or("?"));
+                            bail!(
+                                "No pipelines found for branch {}",
+                                ref_name.as_deref().unwrap_or("?")
+                            );
                         }
                         arr[0].clone()
                     };
@@ -1366,12 +1370,10 @@ async fn main() -> Result<()> {
                         }
                         String::from_utf8(output.stdout)?.trim().to_string()
                     };
-                    let pipelines = client
-                        .list_pipelines_for_branch(Some(&ref_name), 1)
-                        .await?;
-                    let arr = pipelines
-                        .as_array()
-                        .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
+                    let pipelines = client.list_pipelines_for_branch(Some(&ref_name), 1).await?;
+                    let arr = pipelines.as_array().ok_or_else(|| {
+                        anyhow::anyhow!("No pipelines found for branch {}", ref_name)
+                    })?;
                     if arr.is_empty() {
                         bail!("No pipelines found for branch {}", ref_name);
                     }
@@ -1437,12 +1439,11 @@ async fn main() -> Result<()> {
                             }
                             String::from_utf8(output.stdout)?.trim().to_string()
                         };
-                        let pipelines = client
-                            .list_pipelines_for_branch(Some(&ref_name), 1)
-                            .await?;
-                        let arr = pipelines
-                            .as_array()
-                            .ok_or_else(|| anyhow::anyhow!("No pipelines found for branch {}", ref_name))?;
+                        let pipelines =
+                            client.list_pipelines_for_branch(Some(&ref_name), 1).await?;
+                        let arr = pipelines.as_array().ok_or_else(|| {
+                            anyhow::anyhow!("No pipelines found for branch {}", ref_name)
+                        })?;
                         if arr.is_empty() {
                             bail!("No pipelines found for branch {}", ref_name);
                         }
@@ -1460,7 +1461,11 @@ async fn main() -> Result<()> {
                             .find(|j| j["name"].as_str() == Some(&job))
                             .and_then(|j| j["id"].as_u64())
                             .ok_or_else(|| {
-                                anyhow::anyhow!("Job '{}' not found in pipeline {}", job, pipeline_id)
+                                anyhow::anyhow!(
+                                    "Job '{}' not found in pipeline {}",
+                                    job,
+                                    pipeline_id
+                                )
                             })?
                     };
 

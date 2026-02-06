@@ -862,8 +862,7 @@ impl Client {
         };
 
         let builder = if let Some(json_str) = data {
-            let body: Value =
-                serde_json::from_str(json_str).context("Invalid JSON in --data")?;
+            let body: Value = serde_json::from_str(json_str).context("Invalid JSON in --data")?;
             builder.json(&body)
         } else {
             builder
